@@ -28,4 +28,19 @@ jobs:
           npm --version
 
       - name: Publish to npm (Trusted Publishing via OIDC)
-        run: npm publish --access public
+        id: publish_oidc
+        continue-on-error: true
+        run: npm publish --access public --provenance
+
+      - name: Publish to npm (NPM_TOKEN fallback)
+        if: steps.publish_oidc.outcome == 'failure' && secrets.NPM_TOKEN != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
+
+      - name: Fail with clear hint
+        if: steps.publish_oidc.outcome == 'failure' && secrets.NPM_TOKEN == ''
+        run: |
+          echo "::error::OIDC 发布失败，且未配置 NPM_TOKEN。"
+          echo "::error::请在 npm 设置 Trusted Publisher（repo: CookSleep/chatluna-social-media-reader）或添加仓库 Secret: NPM_TOKEN。"
+          exit 1
