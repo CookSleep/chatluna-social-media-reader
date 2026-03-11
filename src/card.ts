@@ -68,6 +68,14 @@ function collectCardPayloads(session: Session, elements: h[]) {
         out.push(session.content)
     }
 
+    const quoteContent =
+        session.quote && typeof session.quote === 'object' && typeof (session.quote as Record<string, unknown>)['content'] === 'string'
+            ? ((session.quote as Record<string, unknown>)['content'] as string)
+            : ''
+    if (looksLikeCardPayload(quoteContent)) {
+        out.push(quoteContent)
+    }
+
     const walk = (nodes: h[]) => {
         for (const node of nodes) {
             const attrs = node.attrs as Record<string, unknown>
@@ -93,6 +101,15 @@ function collectCardPayloads(session: Session, elements: h[]) {
     }
 
     walk(elements)
+
+    const quoteElements =
+        session.quote && typeof session.quote === 'object' && Array.isArray((session.quote as Record<string, unknown>)['elements'])
+            ? ((session.quote as Record<string, unknown>)['elements'] as h[])
+            : []
+    if (quoteElements.length) {
+        walk(quoteElements)
+    }
+
     return out
 }
 

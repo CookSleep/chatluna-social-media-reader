@@ -144,17 +144,43 @@ export function apply(ctx: Context, cfg: Config) {
 
     ctx.middleware(async (session, next) => {
         const elements = session.elements ?? []
+        const quote = resolveQuote(session)
+        const eventQuoteRaw = getEventQuote(session)
+        const eventQuote = quote && quote === eventQuoteRaw ? undefined : eventQuoteRaw
+
         const cards = await Promise.all(
-            extractCardItems(session, elements).map((item) =>
+            extractCardItems(
+                { content: session.content || '' } as Parameters<typeof extractCardItems>[0],
+                elements
+            ).map((item) =>
                 normalizeCardItem(ctx, item, cfg.timeoutSeconds)
             )
         )
+        const quoteCards = await Promise.all(
+            extractCardItems(
+                {
+                    content:
+                        quote && typeof quote === 'object' && typeof (quote as Record<string, unknown>)['content'] === 'string'
+                            ? ((quote as Record<string, unknown>)['content'] as string)
+                            : ''
+                } as Parameters<typeof extractCardItems>[0],
+                quote && typeof quote === 'object' && Array.isArray((quote as Record<string, unknown>)['elements'])
+                    ? ((quote as Record<string, unknown>)['elements'] as h[])
+                    : []
+            ).map((item) =>
+                normalizeCardItem(ctx, item, cfg.timeoutSeconds)
+            )
+        )
+
         if (cards.length) {
             for (const item of cards) {
                 elements.push(h.text(formatCardText(item)))
             }
             session.elements = elements
         }
+
+        injectQuoteContent(quote, eventQuote, quoteCards)
+
         return next()
     }, true)
 
@@ -407,4 +433,53 @@ function toCanonicalXiaohongshuUrl(input: string) {
     } catch {
         return input
     }
+}
+
+function injectQuoteContent(quote: unknown, eventQuote: unknown, cards: ReturnType<typeof extractCardItems>) {
+    if (!cards.length) return
+    const injected = cards.map((item) => formatCardText(item)).join('\n')
+
+    if (quote && typeof quote === 'object') {
+        const target = quote as Record<string, unknown>
+        const previous = typeof target['content'] === 'string' ? target['content'].trim() : ''
+        target['content'] = previous ? `${previous}\n${injected}` : injected
+    }
+
+    if (eventQuote && typeof eventQuote === 'object') {
+        const target = eventQuote as Record<string, unknown>
+        const previous = typeof target['content'] === 'string' ? target['content'].trim() : ''
+        target['content'] = previous ? `${previous}\n${injected}` : injected
+    }
+}
+
+function resolveQuote(session: unknown) {
+    if (!session || typeof session !== 'object') return undefined
+    const target = session as Record<string, unknown>
+
+    if (target['quote'] && typeof target['quote'] === 'object') {
+        return target['quote']
+    }
+
+    const event = target['event'] as Record<string, unknown>
+    if (!event || typeof event !== 'object') return undefined
+
+    const message = event['message'] as Record<string, unknown>
+    if (!message || typeof message !== 'object') return undefined
+
+    const quote = message['quote']
+    if (!quote || typeof quote !== 'object') return undefined
+
+    target['quote'] = quote
+    return quote
+}
+
+function getEventQuote(session: unknown) {
+    if (!session || typeof session !== 'object') return undefined
+    const event = (session as Record<string, unknown>)['event']
+    if (!event || typeof event !== 'object') return undefined
+    const message = (event as Record<string, unknown>)['message']
+    if (!message || typeof message !== 'object') return undefined
+    const quote = (message as Record<string, unknown>)['quote']
+    if (!quote || typeof quote !== 'object') return undefined
+    return quote
 }
