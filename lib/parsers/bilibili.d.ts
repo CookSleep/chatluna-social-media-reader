@@ -19,5 +19,21 @@ export declare function parseBilibili(inputUrl: string, cfg: Config, req: ParseR
         audioQuality: 64 | 132 | 192;
         videoCodecId: number;
         page: number;
+        engagement: {
+            view: number;
+            like: number;
+            coin: number;
+            favorite: number;
+            share: number;
+            comment: number;
+        };
+        pinnedComment: BilibiliHotComment;
+        hotComments: BilibiliHotComment[];
     };
 }>;
+interface BilibiliHotComment {
+    content: string;
+    likes: number;
+    replies: number;
+}
+export {};

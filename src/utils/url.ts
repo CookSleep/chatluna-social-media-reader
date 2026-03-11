@@ -47,9 +47,15 @@ export async function resolveRedirect(url: string, timeoutMs: number) {
         const res = await fetch(url, {
             method: 'GET',
             redirect: 'follow',
-            signal: ac.signal
+            signal: ac.signal,
+            headers: {
+                'user-agent':
+                    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            }
         })
         return res.url || url
+    } catch (err) {
+        throw new Error(`短链解析失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
         clearTimeout(timer)
     }

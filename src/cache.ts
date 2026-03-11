@@ -103,17 +103,21 @@ export class CacheService {
 
         if (this.cfg.cache.cacheMedia && this.hasStorageService()) {
             cached.images = await this.downloadMany(result.images, 'image')
-            cached.videos = await this.downloadMany(result.videos, 'video')
-            cached.audios = await this.downloadMany(result.audios, 'audio')
 
-            if (mergeAudio && result.videos[0] && result.audios[0]) {
+            if (mergeAudio && result.platform === 'bilibili' && result.videos[0] && result.audios[0]) {
                 const merged = await this.mergeFromSources(
                     result.videos[0],
                     result.audios[0]
                 )
                 if (merged) {
                     cached.mergedVideo = merged
+                } else {
+                    cached.videos = await this.downloadMany(result.videos, 'video')
+                    cached.audios = await this.downloadMany(result.audios, 'audio')
                 }
+            } else {
+                cached.videos = await this.downloadMany(result.videos, 'video')
+                cached.audios = await this.downloadMany(result.audios, 'audio')
             }
         } else if (this.cfg.cache.cacheMedia && !this.warnedStorageUnavailable) {
             this.warnedStorageUnavailable = true
@@ -187,7 +191,7 @@ export class CacheService {
     private async download(url: string, base: string) {
         if (!this.hasStorageService()) return null
 
-        const payload = await this.fetchWithinLimit(url)
+        const payload = await this.fetchWithinLimit(url, `cache-${base}`)
         if (!payload) return null
 
         const ext = guessExt(url, payload.contentType)
@@ -204,8 +208,9 @@ export class CacheService {
         }
     }
 
-    private async fetchWithinLimit(url: string) {
+    private async fetchWithinLimit(url: string, tag = 'media') {
         const ac = new AbortController()
+        const start = Date.now()
         const timer = setTimeout(
             () => ac.abort(),
             this.cfg.timeoutSeconds * 1000
@@ -300,6 +305,26 @@ export class CacheService {
                 buffer,
                 contentType: res.headers.get('content-type') || ''
             }
+        } catch (err) {
+            const host = (() => {
+                try {
+                    return new URL(url).host
+                } catch {
+                    return ''
+                }
+            })()
+            this.ctx.logger(name).warn(
+                `媒体下载失败(${tag})：${err instanceof Error ? err.message : String(err)}`
+            )
+            this.debug('媒体下载失败详情', {
+                tag,
+                host,
+                timeoutSeconds: this.cfg.timeoutSeconds,
+                costMs: Date.now() - start,
+                err: String(err),
+                url
+            })
+            return null
         } finally {
             clearTimeout(timer)
         }
@@ -312,21 +337,29 @@ export class CacheService {
     private async mergeFromSources(videoUrl: string, audioUrl: string) {
         if (!this.hasStorageService()) return ''
 
-        const video = await this.fetchWithinLimit(videoUrl)
-        if (!video) return ''
+        try {
+            const video = await this.fetchWithinLimit(videoUrl, 'merge-video')
+            if (!video) return ''
 
-        const audio = await this.fetchWithinLimit(audioUrl)
-        if (!audio) return ''
+            const audio = await this.fetchWithinLimit(audioUrl, 'merge-audio')
+            if (!audio) return ''
 
-        const merged = await this.mergeMp4(video.buffer, audio.buffer)
-        if (!merged) return ''
+            const merged = await this.mergeMp4(video.buffer, audio.buffer)
+            if (!merged) return ''
 
-        const temp = await this.ctx.chatluna_storage.createTempFile(
-            merged,
-            'merged.mp4',
-            this.ttlHours()
-        )
-        return temp.url
+            const temp = await this.ctx.chatluna_storage.createTempFile(
+                merged,
+                'merged.mp4',
+                this.ttlHours()
+            )
+            return temp.url
+        } catch (err) {
+            this.ctx.logger(name).warn(
+                `媒体合并失败：${err instanceof Error ? err.message : String(err)}`
+            )
+            this.debug('媒体合并失败详情', { videoUrl, audioUrl, err: String(err) })
+            return ''
+        }
     }
 
     private hasStorageService() {
@@ -379,7 +412,8 @@ function compactResult(result: SocialParseResult): SocialParseResult {
         url: result.url,
         images: result.images,
         videos: result.videos,
-        audios: result.audios
+        audios: result.audios,
+        extra: result.extra
     }
 }
 

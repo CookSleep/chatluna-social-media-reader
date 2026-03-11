@@ -26,6 +26,8 @@ export interface Config {
         audioQuality: 64 | 132 | 192
         maxDescLength: number
         mergeAudio: boolean
+        parseComments: boolean
+        commentsCount: number
     }
 }
 
@@ -68,6 +70,14 @@ export const Config: Schema<Config> = Schema.intersect([
         }).description('小红书设置'),
         bilibili: Schema.object({
             enabled: Schema.boolean().default(true).description('启用 B 站解析。'),
+            parseComments: Schema.boolean()
+                .default(false)
+                .description('启用后解析 B 站评论区按点赞排序的前 N 条评论，并在有置顶时额外输出 pinnedComment 字段。'),
+            commentsCount: Schema.number()
+                .default(5)
+                .min(1)
+                .max(20)
+                .description('B 站高赞评论解析条数。'),
             videoQuality: Schema.union([
                 Schema.const(480).description('480P（默认）'),
                 Schema.const(720).description('720P')

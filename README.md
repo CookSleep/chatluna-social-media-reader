@@ -22,6 +22,7 @@
 
 ### 3. ⚙️ 平台特定功能
 - **B 站支持**：
+  - 评论区评论解析：启用 `bilibili.parseComments` 后，额外解析按点赞排序的前 N 条评论并输出到 `hotComments` 字段，条数可通过 `bilibili.commentsCount` 控制（默认 5）；若存在置顶评论，还会额外输出 `pinnedComment` 字段。
   - 分辨率支持：480P、720P（默认 480P）。
   - 音质支持：64K、132K、192K（默认 64K）。
   - 音视频混流：启用 `bilibili.mergeAudio` 时，自动利用 `ffmpeg` 服务（需 `koishi-plugin-ffmpeg-path`）进行混流处理。
@@ -30,7 +31,7 @@
 
 - `storageService`：存储服务相关配置。
 - `cacheService`：缓存配置。
-- `bilibili`：B 站平台特定配置（画质、音质、混流）。
+- `bilibili`：B 站平台特定配置（画质、音质、混流、评论解析）。
 - `xiaohongshu`：小红书平台特定配置。
 
 ## ✅ 使用前置条件

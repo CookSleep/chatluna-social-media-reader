@@ -25,6 +25,8 @@ export interface Config {
         audioQuality: 64 | 132 | 192;
         maxDescLength: number;
         mergeAudio: boolean;
+        parseComments: boolean;
+        commentsCount: number;
     };
 }
 export declare const Config: Schema<Config>;

@@ -105,13 +105,24 @@ class SocialReaderTool extends StructuredTool {
                     ? await parseXiaohongshu(this.ctx, req.url, this.cfg)
                     : await parseBilibili(req.url, this.cfg, req, (msg, extra) => debug(msg, extra))
 
-            const saved = this.cfg.cache.enabled
-                ? await this.cache.set(
-                    key,
-                    result,
-                    platform === 'bilibili' && this.cfg.bilibili.mergeAudio
-                )
-                : createTransientResult(key, result)
+            let saved: CachedResult
+            if (!this.cfg.cache.enabled) {
+                saved = createTransientResult(key, result)
+            } else {
+                try {
+                    saved = await this.cache.set(
+                        key,
+                        result,
+                        platform === 'bilibili' && this.cfg.bilibili.mergeAudio
+                    )
+                } catch (err) {
+                    this.ctx.logger(name).warn(
+                        `缓存写入失败，回退直出结果：${err instanceof Error ? err.message : String(err)}`
+                    )
+                    debug('缓存写入失败详情', err)
+                    saved = createTransientResult(key, result)
+                }
+            }
 
             debug('解析完成', {
                 platform,
@@ -262,9 +273,41 @@ function formatOutput(
     const output: Record<string, unknown> = {
         platform: data.result.platform,
         title: data.result.title,
-        author: data.result.author,
-        content: data.result.content,
-        url: data.result.url
+        author: data.result.author
+    }
+
+    if (data.result.platform === 'bilibili') {
+        const extra = data.result.extra as Record<string, unknown> | undefined
+        const description = data.result.content || ''
+        const durationSec = Number(extra?.['durationSec'] || 0)
+        const engagement =
+            extra && typeof extra['engagement'] === 'object'
+                ? (extra['engagement'] as Record<string, unknown>)
+                : undefined
+        const hotComments =
+            extra && Array.isArray(extra['hotComments'])
+                ? (extra['hotComments'] as unknown[])
+                : undefined
+        const pinnedComment =
+            extra && typeof extra['pinnedComment'] === 'object'
+                ? (extra['pinnedComment'] as Record<string, unknown>)
+                : undefined
+
+        output.description = description
+        output.duration = formatDuration(durationSec)
+        if (engagement) {
+            output.engagement = engagement
+        }
+        if (pinnedComment && typeof pinnedComment['content'] === 'string' && String(pinnedComment['content']).length > 0) {
+            output.pinnedComment = pinnedComment
+        }
+        if (hotComments && hotComments.length) {
+            output.hotComments = hotComments
+        }
+        output.url = data.result.url
+    } else {
+        output.content = data.result.content
+        output.url = data.result.url
     }
 
     if (Object.keys(resources).length) {
@@ -272,7 +315,10 @@ function formatOutput(
     }
 
     if (!includeVerbose) {
-        return output
+        return {
+            ...output,
+            note: 'If you have the `read_files` tool, you can try using it to read media content (including images, audio, and video).'
+        }
     }
 
     return {
@@ -292,8 +338,19 @@ function formatOutput(
                 audios: pickFirst(data.cached.audios),
                 mergedVideo: data.cached.mergedVideo || ''
             }
-        }
+        },
+        note: 'If you have the `read_files` tool, you can try using it to read media content (including images, audio, and video).'
     }
+}
+
+function formatDuration(totalSeconds: number) {
+    const sec = Number.isFinite(totalSeconds) && totalSeconds > 0
+        ? Math.floor(totalSeconds)
+        : 0
+    const h = Math.floor(sec / 3600)
+    const m = Math.floor((sec % 3600) / 60)
+    const s = sec % 60
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
 function createTransientResult(

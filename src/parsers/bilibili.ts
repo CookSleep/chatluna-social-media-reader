@@ -12,14 +12,17 @@ export async function parseBilibili(
     req: ParseRequest,
     debug?: (msg: string, extra?: unknown) => void
 ) {
-    const resolved = await resolveRedirect(inputUrl, cfg.timeoutSeconds * 1000)
-    const videoId = extractVideoId(resolved) || extractVideoId(inputUrl)
+    const directId = extractVideoId(inputUrl)
+    const resolved = directId
+        ? inputUrl
+        : await resolveRedirect(inputUrl, cfg.timeoutSeconds * 1000)
+    const videoId = directId || extractVideoId(resolved)
     const page = extractPageNo(resolved) || extractPageNo(inputUrl) || 1
     if (!videoId) {
         throw new Error('无法提取 B 站视频 ID。')
     }
 
-    const detail = await fetchVideoDetail(videoId, page, cfg)
+    const detail = await fetchVideoDetail(videoId, page, cfg, debug)
     if (!detail.bvid || !detail.cid) {
         throw new Error('B 站视频信息不完整，缺少 bvid 或 cid。')
     }
@@ -27,7 +30,22 @@ export async function parseBilibili(
     const qn = (req.bilibiliVideoQuality || cfg.bilibili.videoQuality) === 720 ? 64 : 32
     const aq = req.bilibiliAudioQuality || cfg.bilibili.audioQuality
     const audioId = aq === 192 ? 30280 : aq === 132 ? 30232 : 30216
-    const play = await fetchPlayInfo(detail.bvid, detail.cid, qn, cfg, debug)
+    const commentsPromise = cfg.bilibili.parseComments
+        ? fetchHotComments(detail.aid, cfg.bilibili.commentsCount, cfg, debug)
+            .catch((err) => {
+                debug?.('B 站热评解析失败，已忽略', err instanceof Error ? err.message : err)
+                return {
+                    hotComments: [] as BilibiliHotComment[],
+                    pinnedComment: null as BilibiliHotComment | null
+                }
+            })
+        : Promise.resolve({
+            hotComments: [] as BilibiliHotComment[],
+            pinnedComment: null as BilibiliHotComment | null
+        })
+    const playPromise = fetchPlayInfo(detail.bvid, detail.cid, qn, cfg, debug)
+
+    const [play, comments] = await Promise.all([playPromise, commentsPromise])
 
     const video = pickVideo(play, qn)
     const audio = pickAudio(play, audioId)
@@ -39,7 +57,7 @@ export async function parseBilibili(
     return {
         platform: 'bilibili',
         title: detail.title,
-        content: buildContent(detail.description, cfg.bilibili.maxDescLength, detail.stats),
+        content: buildDescription(detail.description, cfg.bilibili.maxDescLength),
         cover: detail.cover,
         author: detail.owner,
         url: finalUrl,
@@ -54,20 +72,39 @@ export async function parseBilibili(
             videoQuality: qn === 64 ? 720 : 480,
             audioQuality: aq,
             videoCodecId: video?.codecid ?? 0,
-            page
+            page,
+            engagement: {
+                view: detail.stats.view,
+                like: detail.stats.like,
+                coin: detail.stats.coin,
+                favorite: detail.stats.favorite,
+                share: detail.stats.share,
+                comment: detail.stats.comment
+            },
+            pinnedComment: comments.pinnedComment,
+            hotComments: comments.hotComments
         }
     } satisfies SocialParseResult
+}
+
+interface BilibiliHotComment {
+    content: string
+    likes: number
+    replies: number
 }
 
 async function fetchVideoDetail(
     videoId: { type: 'bv' | 'av'; value: string },
     page: number,
-    cfg: Config
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void
 ) {
     const query = videoId.type === 'bv' ? `bvid=${videoId.value}` : `aid=${videoId.value}`
     const payload = await requestJson(
         `https://api.bilibili.com/x/web-interface/view?${query}`,
-        cfg
+        cfg,
+        debug,
+        'video-detail'
     )
     if (Number(payload.code) !== 0 || !payload.data) {
         throw new Error(`B 站元数据获取失败：${payload.message || payload.code}`)
@@ -101,7 +138,8 @@ async function fetchVideoDetail(
             share: Number((data.stat as Record<string, unknown>)?.share || 0),
             danmaku: Number(
                 (data.stat as Record<string, unknown>)?.danmaku || 0
-            )
+            ),
+            comment: Number((data.stat as Record<string, unknown>)?.reply || 0)
         }
     }
 }
@@ -139,7 +177,9 @@ async function fetchPlayInfo(
         const payload = await requestJsonWithWbi(
             'https://api.bilibili.com/x/player/wbi/playurl',
             query,
-            cfg
+            cfg,
+            debug,
+            'playurl-wbi'
         )
         if (Number(payload.code) === 0 && payload.data) {
             debug?.('B 站取流使用 WBI 接口成功', { bvid, cid, qn })
@@ -158,7 +198,7 @@ async function fetchPlayInfo(
         + '&fnver=0'
         + '&fourk=0'
 
-    const payload = await requestJson(url, cfg)
+    const payload = await requestJson(url, cfg, debug, 'playurl-fallback')
     if (Number(payload.code) !== 0 || !payload.data) {
         throw new Error(`B 站播放信息获取失败：${payload.message || payload.code}`)
     }
@@ -231,9 +271,16 @@ function pickAudio(data: Record<string, unknown>, audioId: number) {
     return sorted[0].url
 }
 
-async function requestJson(url: string, cfg: Config) {
+async function requestJson(
+    url: string,
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void,
+    tag = 'unknown'
+) {
     const ac = new AbortController()
+    const start = Date.now()
     const timer = setTimeout(() => ac.abort(), cfg.timeoutSeconds * 1000)
+
     try {
         const res = await fetch(url, {
             signal: ac.signal,
@@ -243,7 +290,13 @@ async function requestJson(url: string, cfg: Config) {
             }
         })
         const text = await res.text()
+        debug?.('B站请求完成', { tag, status: res.status, costMs: Date.now() - start })
         return JSON.parse(text) as Record<string, unknown>
+    } catch (err) {
+        const name = err instanceof Error ? err.name : 'UnknownError'
+        const message = err instanceof Error ? err.message : String(err)
+        debug?.('B站请求异常', { tag, costMs: Date.now() - start, name, message })
+        throw new Error(`B站请求失败(${tag})：${name} ${message}`)
     } finally {
         clearTimeout(timer)
     }
@@ -293,38 +346,92 @@ function normalizeUrl(url: string) {
     return url
 }
 
-function buildContent(
-    desc: string,
-    maxDescLength: number,
-    stats: Record<string, number>
-) {
-    const lines = [
-        `播放：${formatCount(stats.view)}，点赞：${formatCount(stats.like)}，投币：${formatCount(stats.coin)}`,
-        `收藏：${formatCount(stats.favorite)}，转发：${formatCount(stats.share)}，弹幕：${formatCount(stats.danmaku)}`
-    ]
-    if (desc) {
-        if (desc.length > maxDescLength) {
-            lines.push(`简介：${desc.slice(0, maxDescLength)}...`)
-        } else {
-            lines.push(`简介：${desc}`)
-        }
+function buildDescription(desc: string, maxDescLength: number) {
+    if (!desc) return ''
+    if (desc.length > maxDescLength) {
+        return `${desc.slice(0, maxDescLength)}...`
     }
-    return lines.join('\n')
+    return desc
 }
 
-function formatCount(value: number) {
-    if (!Number.isFinite(value) || value <= 0) return '0'
-    if (value >= 100000000) return `${(value / 100000000).toFixed(1).replace(/\.0$/, '')}亿`
-    if (value >= 10000) return `${(value / 10000).toFixed(1).replace(/\.0$/, '')}万`
-    return String(Math.floor(value))
+async function fetchHotComments(
+    aid: string,
+    count: number,
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void
+) {
+    if (!aid || !/^\d+$/.test(aid)) {
+        return {
+            hotComments: [] as BilibiliHotComment[],
+            pinnedComment: null as BilibiliHotComment | null
+        }
+    }
+
+    const safeCount = Math.min(Math.max(Math.floor(count), 1), 20)
+    const url =
+        'https://api.bilibili.com/x/v2/reply'
+        + `?type=1&oid=${encodeURIComponent(aid)}`
+        + '&sort=1&nohot=1'
+        + `&ps=${safeCount}&pn=1`
+    const payload = await requestJson(url, cfg, debug, 'reply-like-top')
+    const items = extractCommentEntries(payload)
+
+    return {
+        pinnedComment: extractTopComment(payload),
+        hotComments: items
+            .map((item) => ({
+            content: String((item.content as Record<string, unknown>)?.message || ''),
+            likes: Number(item.like || 0),
+            replies: Number(item.rcount || item.count || 0)
+        }))
+        .filter((item) => item.content)
+        .slice(0, safeCount)
+    }
+}
+
+function extractCommentEntries(payload: Record<string, unknown>) {
+    if (Number(payload.code) !== 0 || !payload.data) {
+        return [] as Record<string, unknown>[]
+    }
+
+    const data = payload.data as Record<string, unknown>
+    if (Array.isArray(data.replies)) {
+        return data.replies as Record<string, unknown>[]
+    }
+    if (Array.isArray(data.hots)) {
+        return data.hots as Record<string, unknown>[]
+    }
+    return [] as Record<string, unknown>[]
+}
+
+function extractTopComment(payload: Record<string, unknown>) {
+    if (Number(payload.code) !== 0 || !payload.data) {
+        return null
+    }
+
+    const data = payload.data as Record<string, unknown>
+    const upper = data.upper as Record<string, unknown> | undefined
+    const top = upper?.top as Record<string, unknown> | undefined
+    if (!top) return null
+
+    const content = String((top.content as Record<string, unknown>)?.message || '')
+    if (!content) return null
+
+    return {
+        content,
+        likes: Number(top.like || 0),
+        replies: Number(top.rcount || top.count || 0)
+    } satisfies BilibiliHotComment
 }
 
 async function requestJsonWithWbi(
     url: string,
     query: Record<string, string>,
-    cfg: Config
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void,
+    tag = 'wbi'
 ) {
-    const mixin = await getWbiMixinKey(cfg)
+    const mixin = await getWbiMixinKey(cfg, debug)
     const wts = Math.floor(Date.now() / 1000).toString()
     const sorted = Object.keys(query)
         .sort()
@@ -339,11 +446,11 @@ async function requestJsonWithWbi(
         .update(`${plain}${mixin}`)
         .digest('hex')
     const finalUrl = `${url}?${plain}&w_rid=${wRid}`
-    return requestJson(finalUrl, cfg)
+    return requestJson(finalUrl, cfg, debug, tag)
 }
 
-async function getWbiMixinKey(cfg: Config) {
-    const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg)
+async function getWbiMixinKey(cfg: Config, debug?: (msg: string, extra?: unknown) => void) {
+    const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg, debug, 'wbi-nav')
     if (Number(payload.code) !== 0 || !payload.data) {
         throw new Error('获取 WBI 签名参数失败。')
     }
