@@ -96,6 +96,7 @@ export class CacheService {
     ) {
         const cached = {
             images: [] as CachedMediaItem[],
+            commentImages: [] as CachedMediaItem[],
             videos: [] as CachedMediaItem[],
             audios: [] as CachedMediaItem[],
             mergedVideo: ''
@@ -103,6 +104,10 @@ export class CacheService {
 
         if (this.cfg.cache.cacheMedia && this.hasStorageService()) {
             cached.images = await this.downloadMany(result.images, 'image')
+            cached.commentImages = await this.downloadMany(
+                extractBilibiliCommentImageUrls(result),
+                'comment-image'
+            )
 
             if (mergeAudio && result.platform === 'bilibili' && result.videos[0] && result.audios[0]) {
                 const merged = await this.mergeFromSources(
@@ -158,12 +163,19 @@ export class CacheService {
     }
 
     private decode(row: SocialMediaCacheRow): CachedResult {
+        const parsedCached = JSON.parse(row.cached) as Partial<CachedResult['cached']>
         return {
             key: row.key,
             createdAt: row.createdAt.getTime(),
             expiresAt: row.expiresAt.getTime(),
             result: JSON.parse(row.result) as SocialParseResult,
-            cached: JSON.parse(row.cached) as CachedResult['cached']
+            cached: {
+                images: Array.isArray(parsedCached.images) ? parsedCached.images : [],
+                commentImages: Array.isArray(parsedCached.commentImages) ? parsedCached.commentImages : [],
+                videos: Array.isArray(parsedCached.videos) ? parsedCached.videos : [],
+                audios: Array.isArray(parsedCached.audios) ? parsedCached.audios : [],
+                mergedVideo: typeof parsedCached.mergedVideo === 'string' ? parsedCached.mergedVideo : ''
+            }
         }
     }
 
@@ -415,6 +427,39 @@ function compactResult(result: SocialParseResult): SocialParseResult {
         audios: result.audios,
         extra: result.extra
     }
+}
+
+function extractBilibiliCommentImageUrls(result: SocialParseResult) {
+    if (result.platform !== 'bilibili' || !result.extra || typeof result.extra !== 'object') {
+        return [] as string[]
+    }
+
+    const extra = result.extra as Record<string, unknown>
+    const out: string[] = []
+
+    const pushImages = (entry: unknown) => {
+        if (!entry || typeof entry !== 'object') {
+            return
+        }
+        const images = (entry as Record<string, unknown>).images
+        if (!Array.isArray(images)) {
+            return
+        }
+        for (const image of images) {
+            if (typeof image === 'string' && image) {
+                out.push(image)
+            }
+        }
+    }
+
+    pushImages(extra.pinnedComment)
+    if (Array.isArray(extra.hotComments)) {
+        for (const item of extra.hotComments) {
+            pushImages(item)
+        }
+    }
+
+    return Array.from(new Set(out))
 }
 
 function guessExt(url: string, ct: string) {

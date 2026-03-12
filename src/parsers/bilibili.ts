@@ -5,6 +5,7 @@ import { resolveRedirect } from '../utils/url'
 
 const BVID_RE = /BV[0-9a-zA-Z]{10}/i
 const AVID_RE = /(?:^|[^a-zA-Z0-9])av(\d+)/i
+const BILIBILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
 export async function parseBilibili(
     inputUrl: string,
@@ -30,10 +31,11 @@ export async function parseBilibili(
     const qn = (req.bilibiliVideoQuality || cfg.bilibili.videoQuality) === 720 ? 64 : 32
     const aq = req.bilibiliAudioQuality || cfg.bilibili.audioQuality
     const audioId = aq === 192 ? 30280 : aq === 132 ? 30232 : 30216
-    const commentsPromise = cfg.bilibili.parseComments
+    const commentsPromise: Promise<BilibiliCommentResult> = cfg.bilibili.parseComments
         ? fetchHotComments(detail.aid, cfg.bilibili.commentsCount, cfg, debug)
             .catch((err) => {
-                debug?.('B 站热评解析失败，已忽略', err instanceof Error ? err.message : err)
+                const message = err instanceof Error ? err.message : String(err)
+                debug?.('B 站热评解析失败，已忽略', message)
                 return {
                     hotComments: [] as BilibiliHotComment[],
                     pinnedComment: null as BilibiliHotComment | null
@@ -91,6 +93,12 @@ interface BilibiliHotComment {
     content: string
     likes: number
     replies: number
+    images?: string[]
+}
+
+interface BilibiliCommentResult {
+    hotComments: BilibiliHotComment[]
+    pinnedComment: BilibiliHotComment | null
 }
 
 async function fetchVideoDetail(
@@ -286,7 +294,8 @@ async function requestJson(
             signal: ac.signal,
             headers: {
                 referer: 'https://www.bilibili.com/',
-                accept: 'application/json,text/plain,*/*'
+                accept: 'application/json,text/plain,*/*',
+                'user-agent': BILIBILI_UA
             }
         })
         const text = await res.text()
@@ -359,7 +368,7 @@ async function fetchHotComments(
     count: number,
     cfg: Config,
     debug?: (msg: string, extra?: unknown) => void
-) {
+): Promise<BilibiliCommentResult> {
     if (!aid || !/^\d+$/.test(aid)) {
         return {
             hotComments: [] as BilibiliHotComment[],
@@ -368,60 +377,182 @@ async function fetchHotComments(
     }
 
     const safeCount = Math.min(Math.max(Math.floor(count), 1), 20)
-    const url =
-        'https://api.bilibili.com/x/v2/reply'
-        + `?type=1&oid=${encodeURIComponent(aid)}`
-        + '&sort=1&nohot=1'
-        + `&ps=${safeCount}&pn=1`
-    const payload = await requestJson(url, cfg, debug, 'reply-like-top')
-    const items = extractCommentEntries(payload)
+    const seen = new Set<string>()
+    const collected: BilibiliHotComment[] = []
+    const result = await fetchRootRepliesViaWbi(
+        aid,
+        safeCount,
+        cfg,
+        debug
+    )
+    collectCommentOutputs(result.items, seen, collected)
 
     return {
-        pinnedComment: extractTopComment(payload),
-        hotComments: items
-            .map((item) => ({
-            content: String((item.content as Record<string, unknown>)?.message || ''),
-            likes: Number(item.like || 0),
-            replies: Number(item.rcount || item.count || 0)
-        }))
-        .filter((item) => item.content)
-        .slice(0, safeCount)
+        pinnedComment: result.pinnedComment,
+        hotComments: collected.slice(0, safeCount)
     }
 }
 
-function extractCommentEntries(payload: Record<string, unknown>) {
-    if (Number(payload.code) !== 0 || !payload.data) {
-        return [] as Record<string, unknown>[]
-    }
+function collectCommentOutputs(
+    items: Record<string, unknown>[],
+    seen: Set<string>,
+    out: BilibiliHotComment[]
+) {
+    for (const item of items) {
+        const rpid = String(item.rpid || item.rpid_str || '')
+        if (rpid && seen.has(rpid)) {
+            continue
+        }
 
-    const data = payload.data as Record<string, unknown>
-    if (Array.isArray(data.replies)) {
-        return data.replies as Record<string, unknown>[]
+        const parsed = toCommentOutput(item)
+        if (!parsed) {
+            continue
+        }
+
+        if (rpid) {
+            seen.add(rpid)
+        }
+        out.push(parsed)
     }
-    if (Array.isArray(data.hots)) {
-        return data.hots as Record<string, unknown>[]
-    }
-    return [] as Record<string, unknown>[]
 }
 
-function extractTopComment(payload: Record<string, unknown>) {
-    if (Number(payload.code) !== 0 || !payload.data) {
+function toCommentOutput(item: Record<string, unknown>) {
+    const content = String((item.content as Record<string, unknown>)?.message || '')
+    const images = extractCommentImages(item)
+    if (!content && !images.length) {
         return null
     }
 
-    const data = payload.data as Record<string, unknown>
-    const upper = data.upper as Record<string, unknown> | undefined
-    const top = upper?.top as Record<string, unknown> | undefined
-    if (!top) return null
+    return {
+        content: content || '[图片评论]',
+        likes: Number(item.like || 0),
+        replies: Number(item.rcount || item.count || 0),
+        ...(images.length ? { images } : {})
+    } satisfies BilibiliHotComment
+}
 
-    const content = String((top.content as Record<string, unknown>)?.message || '')
-    if (!content) return null
+async function fetchRootRepliesViaWbi(
+    aid: string,
+    targetCount: number,
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void
+) {
+    const maxPages = 2
+    const out: Record<string, unknown>[] = []
+    let pinnedComment: BilibiliHotComment | null = null
+    let offset = ''
+
+    for (let i = 0; i < maxPages; i++) {
+        const payload = await requestJsonWithWbi(
+            'https://api.bilibili.com/x/v2/reply/wbi/main',
+            {
+                oid: aid,
+                type: '1',
+                mode: '3',
+                plat: '1',
+                seek_rpid: '',
+                web_location: '1315875',
+                pagination_str: JSON.stringify({ offset })
+            },
+            cfg,
+            debug,
+            'reply-main-wbi'
+        )
+
+        if (Number(payload.code) !== 0 || !payload.data) {
+            const code = Number(payload.code)
+            const message = String(payload.message || '')
+            throw new Error(`B站评论接口失败：code=${code} message=${message}`)
+        }
+
+        const data = payload.data as Record<string, unknown>
+        if (i === 0) {
+            pinnedComment = extractTopCommentFromWbiData(data)
+        }
+        const topReplies = Array.isArray(data.top_replies)
+            ? (data.top_replies as Record<string, unknown>[])
+            : []
+        const replies = Array.isArray(data.replies)
+            ? (data.replies as Record<string, unknown>[])
+            : []
+        out.push(...topReplies, ...replies)
+        if (out.length >= targetCount) {
+            break
+        }
+
+        const cursor = data.cursor as Record<string, unknown> | undefined
+        const pageReply = cursor?.pagination_reply as Record<string, unknown> | undefined
+        const nextOffset = String(pageReply?.next_offset || '')
+        const isEnd = Boolean(cursor?.is_end)
+        if (!nextOffset || isEnd) {
+            break
+        }
+        offset = nextOffset
+    }
 
     return {
-        content,
-        likes: Number(top.like || 0),
-        replies: Number(top.rcount || top.count || 0)
-    } satisfies BilibiliHotComment
+        pinnedComment,
+        items: out
+    }
+}
+
+function extractTopCommentFromWbiData(data: Record<string, unknown>) {
+    const top = data.top as Record<string, unknown> | undefined
+    const upper = top?.upper as Record<string, unknown> | undefined
+    if (upper) {
+        return toCommentOutput(upper)
+    }
+
+    const topReplies = Array.isArray(data.top_replies)
+        ? (data.top_replies as Record<string, unknown>[])
+        : []
+    if (!topReplies.length) {
+        return null
+    }
+
+    return toCommentOutput(topReplies[0])
+}
+
+function extractCommentImages(item: Record<string, unknown>) {
+    const content = item.content as Record<string, unknown> | undefined
+    const candidates = [
+        ...extractImageUrls(content?.pictures),
+        ...extractImageUrls(item.pictures)
+    ]
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const url of candidates) {
+        const normalized = normalizeUrl(url)
+        if (!normalized || seen.has(normalized)) {
+            continue
+        }
+        seen.add(normalized)
+        out.push(normalized)
+    }
+    return out
+}
+
+function extractImageUrls(raw: unknown) {
+    if (!raw) {
+        return [] as string[]
+    }
+    const items = Array.isArray(raw) ? raw : [raw]
+    const out: string[] = []
+    for (const item of items) {
+        if (typeof item === 'string') {
+            out.push(item)
+            continue
+        }
+        if (!item || typeof item !== 'object') {
+            continue
+        }
+        const row = item as Record<string, unknown>
+        const candidate = row.img_src || row.img_url || row.src || row.url || row.thumbnail_url
+        if (typeof candidate === 'string' && candidate) {
+            out.push(candidate)
+        }
+    }
+    return out
 }
 
 async function requestJsonWithWbi(
@@ -450,18 +581,69 @@ async function requestJsonWithWbi(
 }
 
 async function getWbiMixinKey(cfg: Config, debug?: (msg: string, extra?: unknown) => void) {
-    const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg, debug, 'wbi-nav')
-    if (Number(payload.code) !== 0 || !payload.data) {
-        throw new Error('获取 WBI 签名参数失败。')
+    const now = Date.now()
+    if (WBI_MIXIN_CACHE.value && now < WBI_MIXIN_CACHE.expiresAt) {
+        return WBI_MIXIN_CACHE.value
     }
-    const data = payload.data as Record<string, unknown>
-    const wbi = data.wbi_img as Record<string, unknown>
-    const img = String(wbi.img_url || '')
-    const sub = String(wbi.sub_url || '')
-    const imgKey = img.split('/').pop()?.split('.')[0] || ''
-    const subKey = sub.split('/').pop()?.split('.')[0] || ''
-    const raw = `${imgKey}${subKey}`
-    return WBI_MIXIN_INDEX.map((idx) => raw[idx]).join('').slice(0, 32)
+
+    if (!WBI_MIXIN_CACHE.pending) {
+        WBI_MIXIN_CACHE.pending = (async () => {
+            let lastError = ''
+            for (let i = 0; i < 3; i++) {
+                try {
+                    const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg, debug, 'wbi-nav')
+                    const data = payload.data as Record<string, unknown> | undefined
+                    const wbi = data?.wbi_img as Record<string, unknown> | undefined
+                    if (!wbi || typeof wbi !== 'object') {
+                        throw new Error(`code=${String(payload.code || '')} message=${String(payload.message || '')}`)
+                    }
+                    const img = String(wbi.img_url || '')
+                    const sub = String(wbi.sub_url || '')
+                    const imgKey = img.split('/').pop()?.split('.')[0] || ''
+                    const subKey = sub.split('/').pop()?.split('.')[0] || ''
+                    const raw = `${imgKey}${subKey}`
+                    const mixin = WBI_MIXIN_INDEX.map((idx) => raw[idx]).join('').slice(0, 32)
+                    if (!mixin || mixin.length < 32) {
+                        throw new Error('empty-mixin')
+                    }
+                    WBI_MIXIN_CACHE.value = mixin
+                    WBI_MIXIN_CACHE.expiresAt = Date.now() + 10 * 60 * 1000
+                    return mixin
+                } catch (err) {
+                    lastError = err instanceof Error ? err.message : String(err)
+                    if (i < 2) {
+                        await sleep(200 * (i + 1))
+                    }
+                }
+            }
+
+            if (WBI_MIXIN_CACHE.value) {
+                debug?.('WBI 签名参数刷新失败，回退使用最近缓存', lastError)
+                return WBI_MIXIN_CACHE.value
+            }
+
+            throw new Error(`获取 WBI 签名参数失败：${lastError || 'unknown-error'}`)
+        })()
+            .finally(() => {
+                WBI_MIXIN_CACHE.pending = null
+            })
+    }
+
+    return WBI_MIXIN_CACHE.pending
+}
+
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const WBI_MIXIN_CACHE: {
+    value: string
+    expiresAt: number
+    pending: Promise<string> | null
+} = {
+    value: '',
+    expiresAt: 0,
+    pending: null
 }
 
 const WBI_MIXIN_INDEX = [

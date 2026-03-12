@@ -4,6 +4,8 @@ export interface ParseRequest {
     bilibiliVideoQuality?: 480 | 720;
     bilibiliAudioQuality?: 64 | 132 | 192;
     bilibiliMergeAudio?: boolean;
+    bilibiliParseComments?: boolean;
+    bilibiliCommentsCount?: number;
     xiaohongshuMaxImages?: number;
     cacheMedia?: boolean;
     maxMediaMB?: number;
@@ -32,6 +34,7 @@ export interface CachedResult {
     result: SocialParseResult;
     cached: {
         images: CachedMediaItem[];
+        commentImages: CachedMediaItem[];
         videos: CachedMediaItem[];
         audios: CachedMediaItem[];
         mergedVideo?: string;

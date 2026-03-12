@@ -51,6 +51,8 @@ class SocialReaderTool extends StructuredTool {
             bilibiliVideoQuality: this.cfg.bilibili.videoQuality,
             bilibiliAudioQuality: this.cfg.bilibili.audioQuality,
             bilibiliMergeAudio: this.cfg.bilibili.mergeAudio,
+            bilibiliParseComments: this.cfg.bilibili.parseComments,
+            bilibiliCommentsCount: this.cfg.bilibili.commentsCount,
             xiaohongshuMaxImages: this.cfg.xiaohongshu.maxImages,
             cacheMedia: this.cfg.cache.cacheMedia,
             maxMediaMB: this.cfg.cache.maxMediaMB
@@ -220,6 +222,9 @@ function formatOutput(
     includeVerbose: boolean
 ) {
     const storedImages = data.cached.images.map((item) => item.stored)
+    const commentImageMap = new Map(
+        (data.cached.commentImages || []).map((item) => [item.source, item.stored])
+    )
     const storedVideos = data.cached.videos.map((item) => item.stored)
     const storedAudios = data.cached.audios.map((item) => item.stored)
 
@@ -295,14 +300,47 @@ function formatOutput(
 
         output.description = description
         output.duration = formatDuration(durationSec)
+
+        const normalizeComment = (value: unknown) => {
+            if (!value || typeof value !== 'object') {
+                return null
+            }
+            const item = value as Record<string, unknown>
+            const text = String(item.content || '')
+            const likes = Number(item.likes || 0)
+            const replies = Number(item.replies || 0)
+            const imagesRaw = Array.isArray(item.images)
+                ? item.images.filter((it): it is string => typeof it === 'string' && it.length > 0)
+                : []
+            const images = imagesRaw.map((url) =>
+                preferStoredLink ? (commentImageMap.get(url) || url) : url
+            )
+            if (!text && !images.length) {
+                return null
+            }
+            return {
+                content: text || '[图片评论]',
+                likes,
+                replies,
+                ...(images.length ? { images } : {})
+            }
+        }
+
+        const normalizedPinnedComment = normalizeComment(pinnedComment)
+        const normalizedHotComments = hotComments
+            ? hotComments
+                .map((item) => normalizeComment(item))
+                .filter((item): item is NonNullable<ReturnType<typeof normalizeComment>> => item !== null)
+            : []
+
         if (engagement) {
             output.engagement = engagement
         }
-        if (pinnedComment && typeof pinnedComment['content'] === 'string' && String(pinnedComment['content']).length > 0) {
-            output.pinnedComment = pinnedComment
+        if (normalizedPinnedComment) {
+            output.pinnedComment = normalizedPinnedComment
         }
-        if (hotComments && hotComments.length) {
-            output.hotComments = hotComments
+        if (normalizedHotComments.length) {
+            output.hotComments = normalizedHotComments
         }
         output.url = data.result.url
     } else {
@@ -334,6 +372,7 @@ function formatOutput(
             },
             cachedResources: {
                 images: pickFirst(data.cached.images),
+                commentImages: pickFirst(data.cached.commentImages),
                 videos: pickFirst(data.cached.videos),
                 audios: pickFirst(data.cached.audios),
                 mergedVideo: data.cached.mergedVideo || ''
@@ -365,6 +404,7 @@ function createTransientResult(
         result,
         cached: {
             images: [],
+            commentImages: [],
             videos: [],
             audios: [],
             mergedVideo: ''

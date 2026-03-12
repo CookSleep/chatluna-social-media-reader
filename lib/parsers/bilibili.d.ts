@@ -35,5 +35,6 @@ interface BilibiliHotComment {
     content: string;
     likes: number;
     replies: number;
+    images?: string[];
 }
 export {};

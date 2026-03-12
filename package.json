@@ -1,7 +1,7 @@
 {
     "name": "koishi-plugin-chatluna-social-media-reader",
     "description": "为 ChatLuna 提供哔哩哔哩与小红书社交媒体读取工具",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "homepage": "https://github.com/CookSleep/chatluna-social-media-reader",
     "repository": {
         "type": "git",
