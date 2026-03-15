@@ -189,9 +189,21 @@ async function fetchPlayInfo(
             debug,
             'playurl-wbi'
         )
-        if (Number(payload.code) === 0 && payload.data) {
+        if (
+            Number(payload.code) === 0
+            && payload.data
+            && hasPlayableStreams(payload.data as Record<string, unknown>)
+        ) {
             debug?.('B 站取流使用 WBI 接口成功', { bvid, cid, qn })
             return payload.data as Record<string, unknown>
+        }
+        if (Number(payload.code) === 0 && payload.data) {
+            debug?.('B 站取流 WBI 返回数据不可用，回退旧接口', {
+                bvid,
+                cid,
+                qn,
+                dataKeys: Object.keys(payload.data as Record<string, unknown>)
+            })
         }
     } catch {
         debug?.('B 站取流 WBI 接口失败，回退旧接口', { bvid, cid, qn })
@@ -212,6 +224,21 @@ async function fetchPlayInfo(
     }
     debug?.('B 站取流回退旧接口成功', { bvid, cid, qn })
     return payload.data as Record<string, unknown>
+}
+
+function hasPlayableStreams(data: Record<string, unknown>) {
+    const dash = data.dash as Record<string, unknown> | undefined
+    const dashVideos = Array.isArray(dash?.video)
+        ? (dash?.video as Record<string, unknown>[])
+        : []
+    if (dashVideos.some((item) => normalizeUrl(String(item.baseUrl || item.base_url || '')))) {
+        return true
+    }
+
+    const durl = Array.isArray(data.durl)
+        ? (data.durl as Record<string, unknown>[])
+        : []
+    return durl.some((item) => normalizeUrl(String(item.url || '')))
 }
 
 function pickVideo(data: Record<string, unknown>, qn: number) {

@@ -38,6 +38,7 @@ export declare class CacheService {
     private ttlHours;
     private mergeFromSources;
     private hasStorageService;
+    private isMediaCacheComplete;
     private mergeMp4;
     private debug;
 }

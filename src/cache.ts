@@ -124,11 +124,18 @@ export class CacheService {
                 cached.videos = await this.downloadMany(result.videos, 'video')
                 cached.audios = await this.downloadMany(result.audios, 'audio')
             }
+
+            if (!this.isMediaCacheComplete(result, cached, mergeAudio)) {
+                throw new Error('媒体缓存不完整，已跳过写入缓存。')
+            }
         } else if (this.cfg.cache.cacheMedia && !this.warnedStorageUnavailable) {
             this.warnedStorageUnavailable = true
             this.ctx
                 .logger(name)
                 .warn('未检测到 chatluna-storage-service，媒体将仅返回原始链接，不做存储缓存。')
+            throw new Error('未检测到 chatluna-storage-service，媒体缓存失败。')
+        } else if (this.cfg.cache.cacheMedia) {
+            throw new Error('未检测到 chatluna-storage-service，媒体缓存失败。')
         }
 
         const now = Date.now()
@@ -376,6 +383,40 @@ export class CacheService {
 
     private hasStorageService() {
         return typeof this.ctx.chatluna_storage?.createTempFile === 'function'
+    }
+
+    private isMediaCacheComplete(
+        result: SocialParseResult,
+        cached: CachedResult['cached'],
+        mergeAudio: boolean
+    ) {
+        const hasAllSources = (sources: string[], items: CachedMediaItem[]) => {
+            if (!sources.length) return true
+            const got = new Set(items.map((item) => item.source))
+            return sources.every((url) => got.has(url))
+        }
+
+        if (!hasAllSources(result.images, cached.images)) {
+            return false
+        }
+
+        const needMerged = Boolean(
+            mergeAudio
+            && result.platform === 'bilibili'
+            && result.videos[0]
+            && result.audios[0]
+        )
+
+        if (needMerged) {
+            if (cached.mergedVideo) {
+                return true
+            }
+            return hasAllSources(result.videos, cached.videos)
+                && hasAllSources(result.audios, cached.audios)
+        }
+
+        return hasAllSources(result.videos, cached.videos)
+            && hasAllSources(result.audios, cached.audios)
     }
 
     private async mergeMp4(video: Buffer, audio: Buffer) {
