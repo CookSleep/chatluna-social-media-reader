@@ -22,6 +22,7 @@
 
 ### 3. ⚙️ 平台特定功能
 - **B 站支持**：
+  - 视频标签解析：额外输出 `tags` 字段，并放在视频简介下方，仅保留标签名称。
   - 评论区评论解析：启用 `bilibili.parseComments` 后，额外解析评论区热评前 N 条并输出到 `hotComments` 字段，条数可通过 `bilibili.commentsCount` 控制（默认 5）；若存在置顶评论，还会额外输出 `pinnedComment` 字段。
   - 评论图片支持：图文评论会额外输出 `images` 字段；若启用媒体缓存，评论图片也会同步缓存到 `chatluna-storage-service`。
   - 分辨率支持：480P、720P（默认 480P）。
@@ -30,10 +31,10 @@
 
 ## ⚙️ 主要配置
 
-- `storageService`：存储服务相关配置。
-- `cacheService`：缓存配置。
-- `bilibili`：B 站平台特定配置（画质、音质、混流、评论解析）。
-- `xiaohongshu`：小红书平台特定配置。
+- `storageService`：存储服务相关配置
+- `cacheService`：缓存配置
+- `bilibili`：B 站平台特定配置（画质、音质、混流、评论解析、标签解析输出）
+- `xiaohongshu`：小红书平台特定配置
 
 ## ✅ 使用前置条件
 
@@ -50,3 +51,8 @@
 ## 🤝 贡献
 
 欢迎提交 Issue 或 Pull Request 来改进代码。
+
+## 🙏 致谢
+
+- [pskdje/bilibili-API-collect](https://github.com/pskdje/bilibili-API-collect)，为 B 站视频详情、标签与相关接口的实现提供了文档参考
+- [DD1969 的「Bilibili - 在未登录的情况下照常加载评论」](https://greasyfork.org/zh-CN/scripts/473498-bilibili-%E5%9C%A8%E6%9C%AA%E7%99%BB%E5%BD%95%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E7%85%A7%E5%B8%B8%E5%8A%A0%E8%BD%BD%E8%AF%84%E8%AE%BA)，为 B 站评论接口兼容性排查提供了参考

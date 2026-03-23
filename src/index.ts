@@ -297,8 +297,30 @@ function formatOutput(
             extra && typeof extra['pinnedComment'] === 'object'
                 ? (extra['pinnedComment'] as Record<string, unknown>)
                 : undefined
+        const tagsRaw =
+            extra && Array.isArray(extra['tags'])
+                ? (extra['tags'] as unknown[])
+                : []
 
         output.description = description
+        const tags = tagsRaw
+            .map((item) => {
+                if (!item || typeof item !== 'object') {
+                    return null
+                }
+
+                const row = item as Record<string, unknown>
+                const name = String(row.name || '').trim()
+                if (!name) {
+                    return null
+                }
+
+                return name
+            })
+            .filter((item): item is NonNullable<typeof item> => item !== null)
+        if (tags.length) {
+            output.tags = tags
+        }
         output.duration = formatDuration(durationSec)
 
         const normalizeComment = (value: unknown) => {

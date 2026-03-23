@@ -45,9 +45,15 @@ export async function parseBilibili(
             hotComments: [] as BilibiliHotComment[],
             pinnedComment: null as BilibiliHotComment | null
         })
+    const tagsPromise = fetchVideoTags(detail.bvid, detail.cid, cfg, debug)
+        .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err)
+            debug?.('B 站标签解析失败，已忽略', message)
+            return [] as BilibiliTagItem[]
+        })
     const playPromise = fetchPlayInfo(detail.bvid, detail.cid, qn, cfg, debug)
 
-    const [play, comments] = await Promise.all([playPromise, commentsPromise])
+    const [play, comments, tags] = await Promise.all([playPromise, commentsPromise, tagsPromise])
 
     const video = pickVideo(play, qn)
     const audio = pickAudio(play, audioId)
@@ -70,6 +76,7 @@ export async function parseBilibili(
             bvid: detail.bvid,
             aid: detail.aid,
             cid: detail.cid,
+            tags,
             durationSec: detail.durationSec,
             videoQuality: qn === 64 ? 720 : 480,
             audioQuality: aq,
@@ -99,6 +106,10 @@ interface BilibiliHotComment {
 interface BilibiliCommentResult {
     hotComments: BilibiliHotComment[]
     pinnedComment: BilibiliHotComment | null
+}
+
+interface BilibiliTagItem {
+    name: string
 }
 
 async function fetchVideoDetail(
@@ -150,6 +161,47 @@ async function fetchVideoDetail(
             comment: Number((data.stat as Record<string, unknown>)?.reply || 0)
         }
     }
+}
+
+async function fetchVideoTags(
+    bvid: string,
+    cid: string,
+    cfg: Config,
+    debug?: (msg: string, extra?: unknown) => void
+) {
+    const query = new URLSearchParams({ bvid })
+    if (cid) {
+        query.set('cid', cid)
+    }
+
+    const payload = await requestJson(
+        `https://api.bilibili.com/x/web-interface/view/detail/tag?${query.toString()}`,
+        cfg,
+        debug,
+        'video-tags'
+    )
+
+    if (Number(payload.code) !== 0) {
+        throw new Error(`B 站标签获取失败：${payload.message || payload.code}`)
+    }
+
+    const data = Array.isArray(payload.data)
+        ? payload.data as Record<string, unknown>[]
+        : []
+    const seen = new Set<string>()
+    const out: BilibiliTagItem[] = []
+
+    for (const item of data) {
+        const name = String(item.tag_name || '').trim()
+        if (!name || seen.has(name)) {
+            continue
+        }
+
+        seen.add(name)
+        out.push({ name })
+    }
+
+    return out
 }
 
 function extractPageNo(input: string) {

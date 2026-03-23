@@ -14,6 +14,7 @@ export declare function parseBilibili(inputUrl: string, cfg: Config, req: ParseR
         bvid: string;
         aid: string;
         cid: string;
+        tags: BilibiliTagItem[];
         durationSec: number;
         videoQuality: number;
         audioQuality: 64 | 132 | 192;
@@ -36,5 +37,8 @@ interface BilibiliHotComment {
     likes: number;
     replies: number;
     images?: string[];
+}
+interface BilibiliTagItem {
+    name: string;
 }
 export {};
