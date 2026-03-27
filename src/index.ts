@@ -1,6 +1,6 @@
 import { StructuredTool } from '@langchain/core/tools'
 import { Context, h } from 'koishi'
-import type { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
+import type { ChatLunaToolMeta, ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { z } from 'zod'
 import { CacheService } from './cache'
 import { extractCardItems, formatCardText } from './card'
@@ -204,13 +204,25 @@ export function apply(ctx: Context, cfg: Config) {
         }
 
         const toolName = (cfg.tool.name || 'read_social_media').trim() || 'read_social_media'
+        const tool = new SocialReaderTool(ctx, cfg, cache)
         ctx.effect(() => ctx.chatluna.platform.registerTool(toolName, {
+            description: tool.description,
             selector() {
                 return true
             },
             createTool() {
                 return new SocialReaderTool(ctx, cfg, cache)
-            }
+            },
+            meta: {
+                source: 'extension',
+                group: 'social-media-reader',
+                tags: ['social-media-reader'],
+                defaultMain: true,
+                defaultChatluna: true,
+                defaultCharacter: true,
+                defaultCharacterGroup: true,
+                defaultCharacterPrivate: true
+            } as ChatLunaToolMeta & Record<string, boolean | string | string[]>
         }))
     })
 }
@@ -249,36 +261,22 @@ function formatOutput(
             ? data.cached.mergedVideo
             : ''
 
-    const resources: Record<string, string | string[]> = {}
-
-    if (data.result.platform === 'xiaohongshu') {
-        const video = pickOne(videos)
-        if (video) {
-            resources.video = video
-        } else {
-            if (images.length) {
-                resources.images = images
-            }
-        }
-    } else {
-        const cover = pickOne(images)
-        if (cover) {
-            resources.cover = cover
-        }
-        if (mergedVideo) {
-            resources.mergedVideo = mergedVideo
-        } else {
-            const video = pickOne(videos)
-            const audio = pickOne(audios)
-            if (video) resources.video = video
-            if (audio) resources.audio = audio
-        }
+    const cover = pickOne(images) || data.result.cover || ''
+    const primaryVideo = pickOne(videos)
+    const primaryAudio = pickOne(audios)
+    const output: Record<string, unknown> = {
+        url: data.result.url,
+        platform: data.result.platform
     }
 
-    const output: Record<string, unknown> = {
-        platform: data.result.platform,
-        title: data.result.title,
-        author: data.result.author
+    if (cover) {
+        output.cover = cover
+    }
+
+    output.title = data.result.title
+
+    if (data.result.author) {
+        output.author = data.result.author
     }
 
     if (data.result.platform === 'bilibili') {
@@ -303,6 +301,7 @@ function formatOutput(
                 : []
 
         output.description = description
+
         const tags = tagsRaw
             .map((item) => {
                 if (!item || typeof item !== 'object') {
@@ -321,7 +320,6 @@ function formatOutput(
         if (tags.length) {
             output.tags = tags
         }
-        output.duration = formatDuration(durationSec)
 
         const normalizeComment = (value: unknown) => {
             if (!value || typeof value !== 'object') {
@@ -355,6 +353,17 @@ function formatOutput(
                 .filter((item): item is NonNullable<ReturnType<typeof normalizeComment>> => item !== null)
             : []
 
+        if (mergedVideo) {
+            output.video = mergedVideo
+        } else if (primaryVideo || primaryAudio) {
+            output.videoResources = {
+                ...(primaryVideo ? { video: primaryVideo } : {}),
+                ...(primaryAudio ? { audio: primaryAudio } : {})
+            }
+        }
+
+        output.duration = formatDuration(durationSec)
+
         if (engagement) {
             output.engagement = engagement
         }
@@ -364,20 +373,21 @@ function formatOutput(
         if (normalizedHotComments.length) {
             output.hotComments = normalizedHotComments
         }
-        output.url = data.result.url
+
     } else {
         output.content = data.result.content
-        output.url = data.result.url
-    }
 
-    if (Object.keys(resources).length) {
-        output.resources = resources
+        if (primaryVideo) {
+            output.video = primaryVideo
+        } else if (images.length) {
+            output.resources = { images }
+        }
     }
 
     if (!includeVerbose) {
         return {
             ...output,
-            note: 'If you have the `read_files` tool, you can try using it to read media content (including images, audio, and video).'
+            note: 'Textual information cannot fully represent the content within media. If you have the `read_files` tool, please use it to read the media itself, including images, audio, and video, without worrying about factors such as duration or size.'
         }
     }
 
@@ -400,7 +410,7 @@ function formatOutput(
                 mergedVideo: data.cached.mergedVideo || ''
             }
         },
-        note: 'If you have the `read_files` tool, you can try using it to read media content (including images, audio, and video).'
+        note: 'Textual information cannot fully represent the content within media. If you have the `read_files` tool, please use it to read the media itself, including images, audio, and video, without worrying about factors such as duration or size.'
     }
 }
 
