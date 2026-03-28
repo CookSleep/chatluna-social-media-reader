@@ -93,7 +93,7 @@ class SocialReaderTool extends StructuredTool {
                 hasReadFilesTool = this.ctx.chatluna.platform.getTools().value.includes('read_files')
             }
         } catch {
-            hasReadFilesTool = true
+            hasReadFilesTool = false
         }
 
         if (this.cfg.cache.enabled) {
@@ -454,8 +454,8 @@ function createMediaNote(targets: string[], platform: string, hasVideo: boolean)
     const contentType = platform === 'xiaohongshu' && !hasVideo ? 'post' : 'video'
 
     const targetText = uniqueTargets.length
-        ? `If the user asks you to view the content in this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)} to obtain specific information, without worrying about factors such as duration or size.`
-        : `If the user asks you to view the content in this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs to obtain specific information, without worrying about factors such as duration or size.`
+        ? `If the user just asked you to view this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)} to obtain specific information, without worrying about factors such as duration or size.`
+        : `If the user just asked you to view this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs to obtain specific information, without worrying about factors such as duration or size.`
 
     return `Textual information cannot fully represent the content within media. ${targetText}`
 }
