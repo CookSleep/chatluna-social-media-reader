@@ -29,6 +29,7 @@ export interface CachedMediaItem {
     source: string
     stored: string
     size: number
+    description?: string
 }
 
 export interface CachedResult {

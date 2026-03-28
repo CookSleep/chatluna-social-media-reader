@@ -1,9 +1,11 @@
 import { StructuredTool } from '@langchain/core/tools'
 import { Context, h } from 'koishi'
 import type { ChatLunaToolMeta, ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
+import { modelSchema } from 'koishi-plugin-chatluna/utils/schema'
 import { z } from 'zod'
 import { CacheService } from './cache'
 import { extractCardItems, formatCardText } from './card'
+import { describeCommentImages, toMarkdownImage } from './comment-image'
 import { Config, inject, name } from './config'
 import { parseBilibili } from './parsers/bilibili'
 import { parseXiaohongshu } from './parsers/xiaohongshu'
@@ -101,12 +103,14 @@ class SocialReaderTool extends StructuredTool {
             if (hit) {
                 debug('缓存命中', key)
                 return JSON.stringify(
-                    formatOutput(
+                    await formatOutput(
                         hit,
                         true,
                         this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
                         this.cfg.debug,
-                        hasReadFilesTool
+                        hasReadFilesTool,
+                        this.ctx,
+                        this.cfg
                     ),
                     null,
                     2
@@ -148,12 +152,14 @@ class SocialReaderTool extends StructuredTool {
             })
 
             return JSON.stringify(
-                formatOutput(
+                await formatOutput(
                     saved,
                     false,
                     this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
                     this.cfg.debug,
-                    hasReadFilesTool
+                    hasReadFilesTool,
+                    this.ctx,
+                    this.cfg
                 ),
                 null,
                 2
@@ -213,6 +219,7 @@ export function apply(ctx: Context, cfg: Config) {
     }, true)
 
     ctx.on('ready', async () => {
+        modelSchema(ctx)
         await cache.init()
         if (!cfg.tool.enabled) {
             return
@@ -242,12 +249,14 @@ export function apply(ctx: Context, cfg: Config) {
     })
 }
 
-function formatOutput(
+async function formatOutput(
     data: CachedResult,
     fromCache: boolean,
     preferStoredLink: boolean,
     includeVerbose: boolean,
-    hasReadFilesTool: boolean
+    hasReadFilesTool: boolean,
+    ctx: Context,
+    cfg: Config
 ) {
     const storedImages = data.cached.images.map((item) => item.stored)
     const commentImageMap = new Map(
@@ -337,6 +346,29 @@ function formatOutput(
             output.tags = tags
         }
 
+        const descs = new Map(
+            data.cached.commentImages
+                .filter((item) => item.description)
+                .map((item) => [item.stored, item.description as string])
+        )
+        const miss = [pinnedComment, ...(hotComments || [])]
+            .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+            .flatMap((item) => {
+                const text = String(item.content || '')
+                const images = (Array.isArray(item.images)
+                    ? item.images.filter((it): it is string => typeof it === 'string' && it.length > 0)
+                    : [])
+                    .map((url) => preferStoredLink ? (commentImageMap.get(url) || url) : url)
+                    .filter((url) => !descs.has(url))
+                return images.map((url) => ({ url, text }))
+            })
+        if (miss.length) {
+            const extra = await describeCommentImages(ctx, cfg, miss)
+            for (const [url, text] of extra) {
+                descs.set(url, text)
+            }
+        }
+
         const normalizeComment = (value: unknown) => {
             if (!value || typeof value !== 'object') {
                 return null
@@ -345,12 +377,11 @@ function formatOutput(
             const text = String(item.content || '')
             const likes = Number(item.likes || 0)
             const replies = Number(item.replies || 0)
-            const imagesRaw = Array.isArray(item.images)
+            const images = (Array.isArray(item.images)
                 ? item.images.filter((it): it is string => typeof it === 'string' && it.length > 0)
-                : []
-            const images = imagesRaw.map((url) =>
-                preferStoredLink ? (commentImageMap.get(url) || url) : url
-            )
+                : [])
+                .map((url) => preferStoredLink ? (commentImageMap.get(url) || url) : url)
+                .map((url) => toMarkdownImage(descs.get(url) || '', url))
             if (!text && !images.length) {
                 return null
             }

@@ -1,5 +1,7 @@
 import { Schema } from 'koishi'
 
+export const DEFAULT_COMMENT_IMAGE_PROMPT = '你是一个AI图像描述引擎。请结合图片本身与附带的评论文字，对输入的评论区图片给出30-120字的内容描述。描述应以图片本身为主，只在评论文字确实有助于理解时再引用评论文字。你不应评判或提及时间（若存在）的真实性，你的任务仅仅是描述其本身。'
+
 export interface Config {
     timeoutSeconds: number
     debug: boolean
@@ -28,6 +30,12 @@ export interface Config {
         mergeAudio: boolean
         parseComments: boolean
         commentsCount: number
+        describeCommentImages: boolean
+    }
+    commentImageService: {
+        model: string
+        prompt: string
+        taskConcurrency: number
     }
 }
 
@@ -94,8 +102,18 @@ export const Config: Schema<Config> = Schema.intersect([
             maxDescLength: Schema.number().default(500).min(20).max(1000).description('简介最长字符数'),
             mergeAudio: Schema.boolean()
                 .default(true)
-                .description('缓存媒体时合并视频和音频（需要安装并启用 `koishi-plugin-ffmpeg-path`）')
+                .description('缓存媒体时合并视频和音频（需要安装并启用 `koishi-plugin-ffmpeg-path`）'),
+            describeCommentImages: Schema.boolean()
+                .default(true)
+                .description('为评论区图像生成文本描述')
         }).description('B 站设置')
+    }),
+    Schema.object({
+        commentImageService: Schema.object({
+            model: Schema.dynamic('model').default('无').description('用于评论区图像描述的多模态模型'),
+            prompt: Schema.string().role('textarea').default(DEFAULT_COMMENT_IMAGE_PROMPT).description('评论区图像描述提示词'),
+            taskConcurrency: Schema.number().min(1).max(20).default(4).description('评论区图像描述并发数')
+        }).description('评论区图像描述服务')
     })
 ])
 

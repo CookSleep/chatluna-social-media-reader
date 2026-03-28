@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Context, Time } from 'koishi'
 import type {} from 'koishi-plugin-ffmpeg-path'
+import { describeCommentImages } from './comment-image'
 import { Config, name } from './config'
 import { CachedMediaItem, CachedResult, ParseRequest, SocialParseResult } from './types'
 
@@ -108,6 +109,17 @@ export class CacheService {
                 extractBilibiliCommentImageUrls(result),
                 'comment-image'
             )
+            if (cached.commentImages.length) {
+                const descs = await describeCommentImages(
+                    this.ctx,
+                    this.cfg,
+                    extractBilibiliCommentImages(result)
+                )
+                cached.commentImages = cached.commentImages.map((item) => ({
+                    ...item,
+                    description: descs.get(item.source) || ''
+                }))
+            }
 
             if (mergeAudio && result.platform === 'bilibili' && result.videos[0] && result.audios[0]) {
                 const merged = await this.mergeFromSources(
@@ -178,7 +190,10 @@ export class CacheService {
             result: JSON.parse(row.result) as SocialParseResult,
             cached: {
                 images: Array.isArray(parsedCached.images) ? parsedCached.images : [],
-                commentImages: Array.isArray(parsedCached.commentImages) ? parsedCached.commentImages : [],
+                commentImages: Array.isArray(parsedCached.commentImages) ? parsedCached.commentImages.map((item) => ({
+                    ...item,
+                    description: typeof item.description === 'string' ? item.description : ''
+                })) : [],
                 videos: Array.isArray(parsedCached.videos) ? parsedCached.videos : [],
                 audios: Array.isArray(parsedCached.audios) ? parsedCached.audios : [],
                 mergedVideo: typeof parsedCached.mergedVideo === 'string' ? parsedCached.mergedVideo : ''
@@ -468,6 +483,41 @@ function compactResult(result: SocialParseResult): SocialParseResult {
         audios: result.audios,
         extra: result.extra
     }
+}
+
+function extractBilibiliCommentImages(result: SocialParseResult) {
+    if (result.platform !== 'bilibili' || !result.extra || typeof result.extra !== 'object') {
+        return [] as Array<{ url: string; text: string }>
+    }
+
+    const extra = result.extra as Record<string, unknown>
+    const out: Array<{ url: string; text: string }> = []
+
+    const pushImages = (entry: unknown) => {
+        if (!entry || typeof entry !== 'object') {
+            return
+        }
+        const item = entry as Record<string, unknown>
+        const text = String(item.content || '')
+        const images = item.images
+        if (!Array.isArray(images)) {
+            return
+        }
+        for (const image of images) {
+            if (typeof image === 'string' && image) {
+                out.push({ url: image, text })
+            }
+        }
+    }
+
+    pushImages(extra.pinnedComment)
+    if (Array.isArray(extra.hotComments)) {
+        for (const item of extra.hotComments) {
+            pushImages(item)
+        }
+    }
+
+    return [...new Map(out.map((item) => [item.url, item])).values()]
 }
 
 function extractBilibiliCommentImageUrls(result: SocialParseResult) {
