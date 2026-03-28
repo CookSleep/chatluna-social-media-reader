@@ -384,10 +384,29 @@ function formatOutput(
         }
     }
 
+    const noteTargets: string[] = []
+    if (cover) {
+        noteTargets.push('`cover`')
+    }
+    if (mergedVideo || (data.result.platform === 'xiaohongshu' && primaryVideo)) {
+        noteTargets.push('`video`')
+    }
+    if (!mergedVideo && primaryVideo) {
+        noteTargets.push('`videoResources.video`')
+    }
+    if (!mergedVideo && primaryAudio) {
+        noteTargets.push('`videoResources.audio`')
+    }
+    if (data.result.platform === 'xiaohongshu' && images.length && !primaryVideo) {
+        noteTargets.push('`resources.images`')
+    }
+
+    const note = createMediaNote(noteTargets)
+
     if (!includeVerbose) {
         return {
             ...output,
-            note: 'Textual information cannot fully represent the content within media. If you have the `read_files` tool, please use it to read the media itself, including images, audio, and video, without worrying about factors such as duration or size.'
+            note
         }
     }
 
@@ -410,8 +429,27 @@ function formatOutput(
                 mergedVideo: data.cached.mergedVideo || ''
             }
         },
-        note: 'Textual information cannot fully represent the content within media. If you have the `read_files` tool, please use it to read the media itself, including images, audio, and video, without worrying about factors such as duration or size.'
+        note
     }
+}
+
+function createMediaNote(targets: string[]) {
+    const uniqueTargets = [...new Set(targets)]
+    const targetText = uniqueTargets.length
+        ? `Please use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)}, including images, audio, and video, without worrying about factors such as duration or size.`
+        : 'If you have the `read_files` tool, please use it to directly read the media URLs, including images, audio, and video, without worrying about factors such as duration or size.'
+
+    return `Textual information cannot fully represent the content within media. ${targetText}`
+}
+
+function joinWithAnd(items: string[]) {
+    if (items.length <= 1) {
+        return items[0] || ''
+    }
+    if (items.length === 2) {
+        return `${items[0]} and ${items[1]}`
+    }
+    return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`
 }
 
 function formatDuration(totalSeconds: number) {
