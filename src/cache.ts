@@ -202,24 +202,36 @@ export class CacheService {
     }
 
     private async downloadMany(urls: string[], kind: string) {
-        const out: CachedMediaItem[] = []
-        for (let i = 0; i < urls.length; i++) {
-            const url = urls[i]
-            if (
-                kind === 'image'
-                && isXhsWebImage(url)
-                && !url.includes('!nd_dft_wlteh_jpg_3')
-            ) {
-                continue
-            }
-            try {
-                const item = await this.download(url, `${kind}-${i + 1}`)
-                if (item) out.push(item)
-            } catch (err) {
-                this.ctx.logger(name).warn(String(err))
-            }
-        }
-        return out
+        const out: Array<CachedMediaItem | null> = Array.from({ length: urls.length }, () => null)
+        let index = 0
+        const concurrency = Math.min(this.cfg.mediaDownloadConcurrency, urls.length)
+
+        await Promise.all(
+            Array.from({ length: concurrency }, async () => {
+                while (index < urls.length) {
+                    const current = index
+                    index += 1
+
+                    const url = urls[current]
+                    if (
+                        kind === 'image'
+                        && isXhsWebImage(url)
+                        && !url.includes('!nd_dft_wlteh_jpg_3')
+                    ) {
+                        continue
+                    }
+
+                    try {
+                        const item = await this.download(url, `${kind}-${current + 1}`)
+                        if (item) out[current] = item
+                    } catch (err) {
+                        this.ctx.logger(name).warn(String(err))
+                    }
+                }
+            })
+        )
+
+        return out.filter((item): item is CachedMediaItem => item !== null)
     }
 
     private async download(url: string, base: string) {

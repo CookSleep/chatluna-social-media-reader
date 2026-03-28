@@ -4,6 +4,7 @@ export const DEFAULT_COMMENT_IMAGE_PROMPT = '你是一个AI图像描述引擎。
 
 export interface Config {
     timeoutSeconds: number
+    mediaDownloadConcurrency: number
     debug: boolean
     tool: {
         enabled: boolean
@@ -42,6 +43,7 @@ export interface Config {
 export const Config: Schema<Config> = Schema.intersect([
     Schema.object({
         timeoutSeconds: Schema.number().default(15).description('网络请求超时（秒）'),
+        mediaDownloadConcurrency: Schema.number().min(1).max(20).default(6).description('媒体下载并发数'),
         debug: Schema.boolean().default(false).description('输出调试日志')
     }).description('基础设置'),
     Schema.object({
@@ -112,7 +114,7 @@ export const Config: Schema<Config> = Schema.intersect([
         commentImageService: Schema.object({
             model: Schema.dynamic('model').default('无').description('用于评论区图像描述的多模态模型'),
             prompt: Schema.string().role('textarea').default(DEFAULT_COMMENT_IMAGE_PROMPT).description('评论区图像描述提示词'),
-            taskConcurrency: Schema.number().min(1).max(20).default(4).description('评论区图像描述并发数')
+            taskConcurrency: Schema.number().min(1).max(20).default(20).description('评论区图像描述并发数')
         }).description('评论区图像描述服务')
     })
 ])
