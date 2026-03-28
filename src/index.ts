@@ -83,6 +83,19 @@ class SocialReaderTool extends StructuredTool {
 
         const key = this.cache.createKey(req)
         debug('缓存键', key)
+
+        let hasReadFilesTool = false
+        try {
+            const toolMask = _runnable?.configurable?.toolMask
+            if (toolMask) {
+                hasReadFilesTool = this.ctx.chatluna.platform.getFilteredTools(toolMask).includes('read_files')
+            } else {
+                hasReadFilesTool = this.ctx.chatluna.platform.getTools().value.includes('read_files')
+            }
+        } catch {
+            hasReadFilesTool = true
+        }
+
         if (this.cfg.cache.enabled) {
             const hit = await this.cache.get(key)
             if (hit) {
@@ -92,7 +105,8 @@ class SocialReaderTool extends StructuredTool {
                         hit,
                         true,
                         this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
-                        this.cfg.debug
+                        this.cfg.debug,
+                        hasReadFilesTool
                     ),
                     null,
                     2
@@ -138,7 +152,8 @@ class SocialReaderTool extends StructuredTool {
                     saved,
                     false,
                     this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
-                    this.cfg.debug
+                    this.cfg.debug,
+                    hasReadFilesTool
                 ),
                 null,
                 2
@@ -231,7 +246,8 @@ function formatOutput(
     data: CachedResult,
     fromCache: boolean,
     preferStoredLink: boolean,
-    includeVerbose: boolean
+    includeVerbose: boolean,
+    hasReadFilesTool: boolean
 ) {
     const storedImages = data.cached.images.map((item) => item.stored)
     const commentImageMap = new Map(
@@ -401,12 +417,12 @@ function formatOutput(
         noteTargets.push('`resources.images`')
     }
 
-    const note = createMediaNote(noteTargets)
+    const note = hasReadFilesTool ? createMediaNote(noteTargets, data.result.platform, !!(mergedVideo || primaryVideo)) : undefined
 
     if (!includeVerbose) {
         return {
             ...output,
-            note
+            ...(note ? { note } : {})
         }
     }
 
@@ -429,15 +445,17 @@ function formatOutput(
                 mergedVideo: data.cached.mergedVideo || ''
             }
         },
-        note
+        ...(note ? { note } : {})
     }
 }
 
-function createMediaNote(targets: string[]) {
+function createMediaNote(targets: string[], platform: string, hasVideo: boolean) {
     const uniqueTargets = [...new Set(targets)]
+    const contentType = platform === 'xiaohongshu' && !hasVideo ? 'post' : 'video'
+
     const targetText = uniqueTargets.length
-        ? `If the user asks you to view the content in this video or post, you MUST use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)} to obtain specific information, without worrying about factors such as duration or size. Ignore this requirement if you do not have the \`read_files\` tool.`
-        : `If the user asks you to view the content in this video or post, you MUST use the \`read_files\` tool to directly read the media URLs to obtain specific information, without worrying about factors such as duration or size. Ignore this requirement if you do not have the \`read_files\` tool.`
+        ? `If the user asks you to view the content in this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)} to obtain specific information, without worrying about factors such as duration or size.`
+        : `If the user asks you to view the content in this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs to obtain specific information, without worrying about factors such as duration or size.`
 
     return `Textual information cannot fully represent the content within media. ${targetText}`
 }
