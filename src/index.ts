@@ -1,6 +1,6 @@
 import { StructuredTool } from '@langchain/core/tools'
 import { Context, h } from 'koishi'
-import type { ChatLunaToolMeta, ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
+import type { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { modelSchema } from 'koishi-plugin-chatluna/utils/schema'
 import { z } from 'zod'
 import { CacheService } from './cache'
@@ -239,12 +239,13 @@ export function apply(ctx: Context, cfg: Config) {
                 source: 'extension',
                 group: 'social-media-reader',
                 tags: ['social-media-reader'],
-                defaultMain: true,
-                defaultChatluna: true,
-                defaultCharacter: true,
-                defaultCharacterGroup: true,
-                defaultCharacterPrivate: true
-            } as ChatLunaToolMeta & Record<string, boolean | string | string[]>
+                defaultAvailability: {
+                    enabled: true,
+                    main: true,
+                    chatluna: true,
+                    characterScope: 'all'
+                }
+            }
         }))
     })
 }

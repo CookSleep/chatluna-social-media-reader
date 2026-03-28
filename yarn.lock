@@ -2980,10 +2980,10 @@ koishi-plugin-chatluna-storage-service@^1.0.1:
   resolved "https://registry.yarnpkg.com/koishi-plugin-chatluna-storage-service/-/koishi-plugin-chatluna-storage-service-1.0.4.tgz#e54ab8f020cd0c0a89d9eb8e934fba4be34e62a0"
   integrity sha512-Rsow+lWzXUPvDvm6K2Wf8pCe0kspa0JHEQhUwld4WzHGL1hNin2xjBaX4q6JsGUUd8e68YnXMXdnto9pQbSuDQ==
 
-koishi-plugin-chatluna@^1.3.35:
-  version "1.3.35"
-  resolved "https://registry.yarnpkg.com/koishi-plugin-chatluna/-/koishi-plugin-chatluna-1.3.35.tgz#3ed58c2e36d2a50080351746c20345ff9939ce56"
-  integrity sha512-TMpTIvreejAKYmNos9NM7fOUnDjzoMdMODRqNZIBrOT+CCOVVyrqY5ZLOsvA9/GSCPo/DOf1wBj+/T8ihKEieA==
+koishi-plugin-chatluna@^1.3.36:
+  version "1.3.36"
+  resolved "https://registry.yarnpkg.com/koishi-plugin-chatluna/-/koishi-plugin-chatluna-1.3.36.tgz#bd39392b2c4ccc3a0d2e1daa72d7cc85415b896a"
+  integrity sha512-ooVREd1O4IVHMK08bfDC20noSSY6lV5u/8LyxIcPV7WiSPM1XSwHQZaTPuo0DYnKQRFcD4kiBWJGaLC5OJmhfg==
   dependencies:
     "@chatluna/shared-prompt-renderer" "^1.0.5"
     "@langchain/core" "^0.3.80"
