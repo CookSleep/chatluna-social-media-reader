@@ -22,7 +22,8 @@ declare module 'koishi' {
             createTempFile(
                 buffer: Buffer,
                 filename: string,
-                expireHours?: number
+                expireHours?: number,
+                mimeType?: string
             ): Promise<{ url: string }>
         }
     }
@@ -244,7 +245,8 @@ export class CacheService {
         const file = await this.ctx.chatluna_storage.createTempFile(
             payload.buffer,
             `${base}${ext}`,
-            this.ttlHours()
+            this.ttlHours(),
+            payload.contentType || undefined
         )
 
         return {
@@ -396,7 +398,8 @@ export class CacheService {
             const temp = await this.ctx.chatluna_storage.createTempFile(
                 merged,
                 'merged.mp4',
-                this.ttlHours()
+                this.ttlHours(),
+                'video/mp4'
             )
             return temp.url
         } catch (err) {

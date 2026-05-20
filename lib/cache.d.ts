@@ -11,7 +11,7 @@ interface SocialMediaCacheRow {
 declare module 'koishi' {
     interface Context {
         chatluna_storage?: {
-            createTempFile(buffer: Buffer, filename: string, expireHours?: number): Promise<{
+            createTempFile(buffer: Buffer, filename: string, expireHours?: number, mimeType?: string): Promise<{
                 url: string;
             }>;
         };
