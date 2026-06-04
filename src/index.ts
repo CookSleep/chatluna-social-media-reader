@@ -1,4 +1,5 @@
 import { StructuredTool } from '@langchain/core/tools'
+import { HumanMessage } from '@langchain/core/messages'
 import { Context, h } from 'koishi'
 import type { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
 import { modelSchema } from 'koishi-plugin-chatluna/utils/schema'
@@ -110,7 +111,8 @@ class SocialReaderTool extends StructuredTool {
                         this.cfg.debug,
                         hasReadFilesTool,
                         this.ctx,
-                        this.cfg
+                        this.cfg,
+                        _runnable?.configurable?.conversationId
                     ),
                     null,
                     2
@@ -159,7 +161,8 @@ class SocialReaderTool extends StructuredTool {
                     this.cfg.debug,
                     hasReadFilesTool,
                     this.ctx,
-                    this.cfg
+                    this.cfg,
+                    _runnable?.configurable?.conversationId
                 ),
                 null,
                 2
@@ -257,7 +260,8 @@ async function formatOutput(
     includeVerbose: boolean,
     hasReadFilesTool: boolean,
     ctx: Context,
-    cfg: Config
+    cfg: Config,
+    conversationId?: string
 ) {
     const storedImages = data.cached.images.map((item) => item.stored)
     const commentImageMap = new Map(
@@ -450,12 +454,18 @@ async function formatOutput(
     }
 
     const note = hasReadFilesTool ? createMediaNote(noteTargets, data.result.platform, !!(mergedVideo || primaryVideo)) : undefined
+    if (note && conversationId) {
+        ctx.chatluna.contextManager.inject({
+            conversationId,
+            name: 'read_social_media_note',
+            value: new HumanMessage(note),
+            once: true,
+            stage: 'after_scratchpad'
+        })
+    }
 
     if (!includeVerbose) {
-        return {
-            ...output,
-            ...(note ? { note } : {})
-        }
+        return output
     }
 
     return {
@@ -476,8 +486,7 @@ async function formatOutput(
                 audios: pickFirst(data.cached.audios),
                 mergedVideo: data.cached.mergedVideo || ''
             }
-        },
-        ...(note ? { note } : {})
+        }
     }
 }
 
@@ -485,11 +494,16 @@ function createMediaNote(targets: string[], platform: string, hasVideo: boolean)
     const uniqueTargets = [...new Set(targets)]
     const contentType = platform === 'xiaohongshu' && !hasVideo ? 'post' : 'video'
 
-    const targetText = uniqueTargets.length
-        ? `If the user just asked you to view this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs from ${joinWithAnd(uniqueTargets)} to obtain specific information, without worrying about factors such as duration or size.`
-        : `If the user just asked you to view this ${contentType}, you MUST use the \`read_files\` tool to directly read the media URLs to obtain specific information, without worrying about factors such as duration or size.`
+    const readTarget = uniqueTargets.length
+        ? `the media URLs in ${joinWithAnd(uniqueTargets)}`
+        : 'the media URLs'
 
-    return `Textual information cannot fully represent the content within media. ${targetText}`
+    return [
+        `**CRITICAL**: The title, description, tags, comments, and other text fields above are only **metadata**; they do NOT represent the actual visual or auditory content of this ${contentType}.`,
+        `You have NOT yet perceived what the ${contentType} actually shows or sounds like.`,
+        `To understand the actual content, you MUST call the \`read_files\` tool to read ${readTarget} (ignore file duration or size concerns).`,
+        `Do NOT assume you already know the ${contentType}'s content from metadata alone; respond to the user only after reading the media.`
+    ].join(' ')
 }
 
 function joinWithAnd(items: string[]) {
