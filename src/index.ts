@@ -87,9 +87,21 @@ class SocialReaderTool extends StructuredTool {
         const key = this.cache.createKey(req)
         debug('缓存键', key)
 
+        const configurable = _runnable?.configurable as
+            | (ChatLunaToolRunnable['configurable'] & {
+                agentContext?: {
+                    conversationId?: string
+                    toolMask?: ChatLunaToolRunnable['configurable']['toolMask']
+                }
+            })
+            | undefined
+        const conversationId = configurable?.agentContext?.conversationId
+            || configurable?.conversationId
+        const toolMask = configurable?.agentContext?.toolMask
+            ?? configurable?.toolMask
+
         let hasReadFilesTool = false
         try {
-            const toolMask = _runnable?.configurable?.toolMask
             if (toolMask) {
                 hasReadFilesTool = this.ctx.chatluna.platform.getFilteredTools(toolMask).includes('read_files')
             } else {
@@ -112,7 +124,7 @@ class SocialReaderTool extends StructuredTool {
                         hasReadFilesTool,
                         this.ctx,
                         this.cfg,
-                        _runnable?.configurable?.conversationId
+                        conversationId
                     ),
                     null,
                     2
@@ -162,7 +174,7 @@ class SocialReaderTool extends StructuredTool {
                     hasReadFilesTool,
                     this.ctx,
                     this.cfg,
-                    _runnable?.configurable?.conversationId
+                    conversationId
                 ),
                 null,
                 2

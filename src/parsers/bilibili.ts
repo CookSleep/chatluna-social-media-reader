@@ -5,7 +5,6 @@ import { resolveRedirect } from '../utils/url'
 
 const BVID_RE = /BV[0-9a-zA-Z]{10}/i
 const AVID_RE = /(?:^|[^a-zA-Z0-9])av(\d+)/i
-const BILIBILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
 export async function parseBilibili(
     inputUrl: string,
@@ -373,8 +372,7 @@ async function requestJson(
             signal: ac.signal,
             headers: {
                 referer: 'https://www.bilibili.com/',
-                accept: 'application/json,text/plain,*/*',
-                'user-agent': BILIBILI_UA
+                accept: 'application/json,text/plain,*/*'
             }
         })
         const text = await res.text()
