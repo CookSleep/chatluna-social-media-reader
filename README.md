@@ -44,7 +44,7 @@
 - Koishi，以及已安装并配置好模型的 [ChatLuna](https://github.com/ChatLunaLab/chatluna)（`koishi-plugin-chatluna` 1.3.36 及以上）。
 - 需要 `database`、`http` 服务，以及 [`koishi-plugin-ffmpeg-path`](https://www.npmjs.com/package/koishi-plugin-ffmpeg-path) 提供的 `ffmpeg` 服务。
 - 可选：[`koishi-plugin-chatluna-storage-service`](https://www.npmjs.com/package/koishi-plugin-chatluna-storage-service)，用于媒体缓存与 B 站音视频合并。
-- 可选：提供 `read_files` 工具的插件（如 `chatluna-multimodal-service`），让模型读取媒体的实际内容。
+- 可选：[`koishi-plugin-chatluna-multimodal-service`](https://www.npmjs.com/package/koishi-plugin-chatluna-multimodal-service)，提供 `read_files` 工具，让模型读取视频、音频或图片的实际内容。
 - 为评论区图片生成描述时，需要一个支持图片输入的模型。
 
 ## 📦 安装
