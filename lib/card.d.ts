@@ -1,9 +1,3 @@
-import { h, Session } from 'koishi';
-interface CardHit {
-    platform: 'bilibili' | 'xiaohongshu';
-    title: string;
-    url: string;
-}
-export declare function extractCardItems(session: Session, elements: h[]): CardHit[];
-export declare function formatCardText(item: CardHit): string;
-export {};
+import type { Context } from 'cordis';
+import type { Config } from './config.js';
+export declare function registerCards(ctx: Context, cfg: Config): void;

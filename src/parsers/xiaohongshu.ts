@@ -1,26 +1,32 @@
 import { load } from 'js-yaml'
-import { Context } from 'koishi'
-import { Config } from '../config'
-import { SocialParseResult } from '../types'
-import { normalizeInputUrl } from '../utils/url'
 
-export async function parseXiaohongshu(ctx: Context, inputUrl: string, cfg: Config) {
+import type { ReadConfig as Config } from '../config.js'
+import { SocialParseResult } from '../types.js'
+import { normalizeInputUrl, fetchPost, readLimited } from '../utils/url.js'
+
+export async function parseXiaohongshu(inputUrl: string, cfg: Config) {
     const normalized = normalizeInputUrl(inputUrl)
     if (!normalized) {
         throw new Error('小红书链接无效。')
     }
 
     const canonical = toCanonicalXiaohongshuUrl(normalized)
-    const html = await fetchHtml(ctx, canonical, cfg)
+    const { html, finalUrl } = await fetchHtml(canonical, cfg)
+    if (new URL(finalUrl).pathname === '/login') throw new Error('小红书要求登录，无法匿名读取这篇笔记。')
     const state = parseInitialState(html)
     if (!state) {
         throw new Error('提取小红书初始数据失败。')
     }
 
+    const id = new URL(finalUrl).pathname.match(/\/(?:discovery\/item|explore)\/([a-z0-9]+)/i)?.[1]
+    const notes = deepGet(state, ['note', 'noteDetailMap']) as Record<string, { note?: unknown }> | undefined
+    const rows = Object.values(notes || {})
     const note =
         deepGet(state, ['noteData', 'data', 'noteData'])
-        || deepGet(state, ['note', 'noteDetailMap', '[-1]', 'note'])
-        || {}
+        || (id && notes?.[id]?.note)
+        || (rows.length === 1 && !id ? rows[0].note : undefined)
+
+    if (!note || typeof note !== 'object') throw new Error('页面没有可读取的小红书笔记。')
 
     const title = String(deepGet(note, ['title']) || '未命名笔记')
     const content = String(deepGet(note, ['desc']) || '')
@@ -39,33 +45,30 @@ export async function parseXiaohongshu(ctx: Context, inputUrl: string, cfg: Conf
         content,
         cover: images[0] || '',
         author,
-        url: canonical,
+        url: finalUrl,
         images,
         videos,
         audios: []
     } satisfies SocialParseResult
 }
 
-async function fetchHtml(ctx: Context, url: string, cfg: Config) {
+async function fetchHtml(url: string, cfg: Config) {
     let err: Error
     for (let i = 0; i < cfg.xiaohongshu.maxRetries; i++) {
         try {
-            const text = await ctx.http.get(url, {
-                responseType: 'text',
-                timeout: cfg.timeoutSeconds * 1000,
-                headers: {
-                    'user-agent': cfg.xiaohongshu.userAgent,
-                    accept:
-                        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                    referer: 'https://www.xiaohongshu.com/'
-                }
+            const timeout = AbortSignal.timeout(cfg.timeoutSeconds * 1000)
+            const response = await fetchPost(url, {
+                signal: cfg.signal ? AbortSignal.any([cfg.signal, timeout]) : timeout,
+                headers: { 'user-agent': cfg.xiaohongshu.userAgent, 'accept-language': 'zh-CN,zh;q=0.9', referer: 'https://www.xiaohongshu.com/' }
             })
+            if (!response.ok) { await response.body?.cancel(); throw new Error('小红书 HTTP ' + response.status) }
+            const text = (await readLimited(response, 8 * 1024 * 1024)).toString('utf8')
             if (!text) {
                 throw new Error('空页面响应。')
             }
-            return text
+            return { html: text, finalUrl: response.url || url }
         } catch (e) {
+            cfg.signal?.throwIfAborted()
             err = e as Error
             await new Promise((r) => setTimeout(r, (i + 1) * 300))
         }
@@ -81,7 +84,7 @@ function parseInitialState(html: string) {
     const script = scripts.find((item) => item.startsWith('window.__INITIAL_STATE__'))
     if (!script) return null
 
-    const text = script.replace(/^window\.__INITIAL_STATE__\s*=\s*/, '')
+    const text = script.replace(/^window\.__INITIAL_STATE__\s*=\s*/, '').replace(/;\s*$/, '')
     try {
         return load(text) as Record<string, unknown>
     } catch {
@@ -125,9 +128,7 @@ function extractImages(note: unknown) {
             || ''
         )
         if (!url) continue
-        const token = getImageToken(url)
-        if (!token) continue
-        out.push(`https://sns-img-bd.xhscdn.com/${token}`)
+        out.push(formatUrl(url).replace(/^http:/, 'https:'))
     }
     return dedupe(out)
 }
@@ -164,14 +165,6 @@ function extractVideos(note: unknown) {
 
     const master = String(deepGet(best, ['masterUrl']) || '')
     return master ? [formatUrl(master)] : []
-}
-
-function getImageToken(url: string) {
-    const text = formatUrl(url)
-    const parts = text.split('/').slice(5)
-    if (!parts.length) return ''
-    const token = parts.join('/').split('!')[0]
-    return token || ''
 }
 
 function formatUrl(url: string) {

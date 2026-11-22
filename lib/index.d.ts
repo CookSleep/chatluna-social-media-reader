@@ -1,4 +1,4 @@
-import { Context } from 'koishi';
-import { Config } from './config';
-export declare function apply(ctx: Context, cfg: Config): void;
-export * from './config';
+import type { Context } from 'cordis';
+import type { Config } from './config.js';
+export * from './config.js';
+export declare function apply(ctx: Context, cfg: Config): Promise<void>;

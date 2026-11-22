@@ -1,268 +1,82 @@
-import { StructuredTool } from '@langchain/core/tools'
-import { HumanMessage } from '@langchain/core/messages'
-import { Context, h } from 'koishi'
-import type { ChatLunaToolRunnable } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { modelSchema } from 'koishi-plugin-chatluna/utils/schema'
-import { z } from 'zod'
-import { CacheService } from './cache'
-import { extractCardItems, formatCardText } from './card'
-import { describeCommentImages, toMarkdownImage } from './comment-image'
-import { Config, inject, name } from './config'
-import { parseBilibili } from './parsers/bilibili'
-import { parseXiaohongshu } from './parsers/xiaohongshu'
-import { CachedResult } from './types'
-import { ParseRequest } from './types'
-import { detectPlatform, normalizeInputUrl } from './utils/url'
+import type { Context } from 'cordis'
+import { Schema } from '@chatluna/schema'
+import { defineTool } from '@chatluna/tool'
+import { ChatMessage, type ChatFileBlock } from '@chatluna/message'
+import { registerCards } from './card.js'
+import { CacheService } from './cache.js'
+import { describeCommentImages, toMarkdownImage } from './comment-image.js'
+import type { Config, ReadConfig } from './config.js'
+import { parseBilibili } from './parsers/bilibili.js'
+import { parseXiaohongshu } from './parsers/xiaohongshu.js'
+import type { CachedMediaItem, CachedResult, ParseRequest } from './types.js'
+import { detectPlatform, isMediaUrl, normalizeInputUrl } from './utils/url.js'
+export * from './config.js'
 
-const schema = z.object({
-    url: z.string().describe('需要读取的哔哩哔哩或小红书链接。')
-})
-
-class SocialReaderTool extends StructuredTool {
-    name: string
-    description: string
-    schema = schema
-
-    constructor(
-        private ctx: Context,
-        private cfg: Config,
-        private cache: CacheService
-    ) {
-        super({})
-        this.name = (cfg.tool.name || 'read_social_media').trim()
-        this.description =
-            (cfg.tool.description || '').trim()
-            || '读取哔哩哔哩或小红书链接，返回结构化信息与资源链接。'
-    }
-
-    async _call(
-        input: z.infer<typeof schema>,
-        _runManager: unknown,
-        _runnable: ChatLunaToolRunnable
-    ) {
-        const debug = (message: string, payload?: unknown) => {
-            if (!this.cfg.debug) return
-            if (payload == null) {
-                this.ctx.logger(name).debug(message)
-                return
-            }
-            this.ctx.logger(name).debug(message, payload)
-        }
-
-        const req: ParseRequest = {
-            url: input.url,
-            bilibiliVideoQuality: this.cfg.bilibili.videoQuality,
-            bilibiliAudioQuality: this.cfg.bilibili.audioQuality,
-            bilibiliMergeAudio: this.cfg.bilibili.mergeAudio,
-            bilibiliParseComments: this.cfg.bilibili.parseComments,
-            bilibiliCommentsCount: this.cfg.bilibili.commentsCount,
-            xiaohongshuMaxImages: this.cfg.xiaohongshu.maxImages,
-            cacheMedia: this.cfg.cache.cacheMedia,
-            maxMediaMB: this.cfg.cache.maxMediaMB
-        }
-        debug('收到工具请求', req)
-
-        const raw = normalizeInputUrl(req.url)
-        if (!raw) {
-            return '输入中没有可识别的链接。'
-        }
-        debug('归一化链接', raw)
-
-        const platform = detectPlatform(raw)
-        if (!platform) {
-            return '当前仅支持小红书与哔哩哔哩链接。'
-        }
-        debug('识别平台', platform)
-
-        if (platform === 'bilibili') {
-            req.url = await toCanonicalBilibiliRequestUrl(
-                this.ctx,
-                raw,
-                this.cfg.timeoutSeconds
-            )
-        } else if (platform === 'xiaohongshu') {
-            req.url = toCanonicalXiaohongshuUrl(raw)
-        }
-
-        const key = this.cache.createKey(req)
-        debug('缓存键', key)
-
-        const configurable = _runnable?.configurable as
-            | (ChatLunaToolRunnable['configurable'] & {
-                agentContext?: {
-                    conversationId?: string
-                    toolMask?: ChatLunaToolRunnable['configurable']['toolMask']
-                }
-            })
-            | undefined
-        const conversationId = configurable?.agentContext?.conversationId
-            || configurable?.conversationId
-        const toolMask = configurable?.agentContext?.toolMask
-            ?? configurable?.toolMask
-
-        let hasReadFilesTool = false
-        try {
-            if (toolMask) {
-                hasReadFilesTool = this.ctx.chatluna.platform.getFilteredTools(toolMask).includes('read_files')
-            } else {
-                hasReadFilesTool = this.ctx.chatluna.platform.getTools().value.includes('read_files')
-            }
-        } catch {
-            hasReadFilesTool = false
-        }
-
-        if (this.cfg.cache.enabled) {
-            const hit = await this.cache.get(key)
-            if (hit) {
-                debug('缓存命中', key)
-                return JSON.stringify(
-                    await formatOutput(
-                        hit,
-                        true,
-                        this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
-                        this.cfg.debug,
-                        hasReadFilesTool,
-                        this.ctx,
-                        this.cfg,
-                        conversationId
-                    ),
-                    null,
-                    2
-                )
-            }
-            debug('缓存未命中', key)
-        }
-
-        try {
-            const result =
-                platform === 'xiaohongshu'
-                    ? await parseXiaohongshu(this.ctx, req.url, this.cfg)
-                    : await parseBilibili(req.url, this.cfg, req, (msg, extra) => debug(msg, extra))
-
-            let saved: CachedResult
-            if (!this.cfg.cache.enabled) {
-                saved = createTransientResult(key, result)
-            } else {
-                try {
-                    saved = await this.cache.set(
-                        key,
-                        result,
-                        platform === 'bilibili' && this.cfg.bilibili.mergeAudio
-                    )
-                } catch (err) {
-                    this.ctx.logger(name).warn(
-                        `缓存写入失败，回退直出结果：${err instanceof Error ? err.message : String(err)}`
-                    )
-                    debug('缓存写入失败详情', err)
-                    saved = createTransientResult(key, result)
-                }
-            }
-
-            debug('解析完成', {
-                platform,
-                images: result.images.length,
-                videos: result.videos.length,
-                audios: result.audios.length
-            })
-
-            return JSON.stringify(
-                await formatOutput(
-                    saved,
-                    false,
-                    this.cfg.cache.enabled && this.cfg.cache.cacheMedia,
-                    this.cfg.debug,
-                    hasReadFilesTool,
-                    this.ctx,
-                    this.cfg,
-                    conversationId
-                ),
-                null,
-                2
-            )
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err)
-            this.ctx.logger(name).error(msg)
-            debug('解析异常详情', err)
-            return `解析失败：${msg}`
+async function readPost(ctx: Context, cfg: ReadConfig, input: string) {
+    const url = normalizeInputUrl(input)
+    const platform = detectPlatform(url)
+    if (!platform || !cfg[platform].enabled) throw new Error('链接不受支持或该平台已停用。')
+    const cache = new CacheService(ctx, cfg)
+    const req: ParseRequest = { url, bilibiliVideoQuality: cfg.bilibili.videoQuality, bilibiliAudioQuality: cfg.bilibili.audioQuality,
+        bilibiliMergeAudio: cfg.bilibili.mergeAudio, bilibiliParseComments: cfg.bilibili.parseComments,
+        bilibiliCommentsCount: cfg.bilibili.commentsCount, xiaohongshuMaxImages: cfg.xiaohongshu.maxImages,
+        cacheMedia: cfg.cache.cacheMedia, maxMediaMB: cfg.cache.maxMediaMB }
+    const key = cache.createKey(req)
+    cfg.signal?.throwIfAborted()
+    const hit = await cache.get(key)
+    let data = hit
+    if (!data) {
+        const result = platform === 'bilibili' ? await parseBilibili(url, cfg, req) : await parseXiaohongshu(url, cfg)
+        cfg.signal?.throwIfAborted()
+        data = createTransientResult(key, result)
+        if (cfg.cache.enabled) {
+            try { data = await cache.set(key, result, cfg.bilibili.mergeAudio) }
+            catch { cfg.signal?.throwIfAborted(); ctx.logger.warn('缓存写入失败，保留原始解析结果。') }
         }
     }
+    const output = await formatOutput(data, !!hit, cfg.cache.cacheMedia, cfg.debug, ctx, cfg)
+    const media: ChatFileBlock[] = []
+    const seen = new Set<string>()
+    function attach(url: string, mediaType: string) {
+        if (seen.has(url) || !url || !(url.startsWith('storage://') || isMediaUrl(url))) return
+        seen.add(url)
+        media.push({ type: 'file', mediaType, data: url.startsWith('storage://')
+            ? { type: 'reference', reference: url } : { type: 'url', url } })
+    }
+    function attachSources(urls: string[], cached: CachedMediaItem[], kind: string) {
+        for (const url of urls) {
+            const item = cached.find(entry => entry.source === url)
+            if (cfg.cache.enabled && cfg.cache.cacheMedia && ctx.get('chatluna_storage') && !item) continue
+            const mediaType = item?.mimeType || mediaTypeFromUrl(url)
+            if (mediaType?.startsWith(kind + '/')) attach(item?.stored || url, mediaType)
+        }
+    }
+    attachSources(data.result.images, data.cached.images, 'image')
+    if (data.cached.mergedVideo) attach(data.cached.mergedVideo, 'video/mp4')
+    else {
+        attachSources(data.result.videos, data.cached.videos, 'video')
+        for (const item of data.cached.audios) {
+            if (item.mimeType === 'audio/mpeg' || item.mimeType === 'audio/wav') attach(item.stored, item.mimeType)
+        }
+    }
+    cfg.signal?.throwIfAborted()
+    return { output, media }
 }
 
-export function apply(ctx: Context, cfg: Config) {
-    const cache = new CacheService(ctx, cfg)
-
-    ctx.middleware(async (session, next) => {
-        const elements = session.elements ?? []
-        const quote = resolveQuote(session)
-        const eventQuoteRaw = getEventQuote(session)
-        const eventQuote = quote && quote === eventQuoteRaw ? undefined : eventQuoteRaw
-
-        const cards = await Promise.all(
-            extractCardItems(
-                { content: session.content || '' } as Parameters<typeof extractCardItems>[0],
-                elements
-            ).map((item) =>
-                normalizeCardItem(ctx, item, cfg.timeoutSeconds)
-            )
-        )
-        const quoteCards = await Promise.all(
-            extractCardItems(
-                {
-                    content:
-                        quote && typeof quote === 'object' && typeof (quote as Record<string, unknown>)['content'] === 'string'
-                            ? ((quote as Record<string, unknown>)['content'] as string)
-                            : ''
-                } as Parameters<typeof extractCardItems>[0],
-                quote && typeof quote === 'object' && Array.isArray((quote as Record<string, unknown>)['elements'])
-                    ? ((quote as Record<string, unknown>)['elements'] as h[])
-                    : []
-            ).map((item) =>
-                normalizeCardItem(ctx, item, cfg.timeoutSeconds)
-            )
-        )
-
-        if (cards.length) {
-            for (const item of cards) {
-                elements.push(h.text(formatCardText(item)))
-            }
-            session.elements = elements
+export async function apply(ctx: Context, cfg: Config) {
+    registerCards(ctx, cfg)
+    if (!cfg.tool.enabled) return
+    await new CacheService(ctx, cfg).init()
+    ctx.tools.define(defineTool<{ url: string }>({
+        name: cfg.tool.name, description: cfg.tool.description,
+        args: Schema.object({ url: Schema.string().required().description('小红书笔记或哔哩哔哩视频链接，支持分享短链。') }),
+        traits: { effect: 'read', parallel: true },
+        async run({ url }, call) {
+            const { output, media } = await readPost(ctx, { ...cfg, signal: call.signal }, url)
+            if (media.length) call.note(ChatMessage.notice('social-media-reader', media))
+            return output
         }
-
-        injectQuoteContent(quote, eventQuote, quoteCards)
-
-        return next()
-    }, true)
-
-    ctx.on('ready', async () => {
-        modelSchema(ctx)
-        await cache.init()
-        if (!cfg.tool.enabled) {
-            return
-        }
-
-        const toolName = (cfg.tool.name || 'read_social_media').trim() || 'read_social_media'
-        const tool = new SocialReaderTool(ctx, cfg, cache)
-        ctx.effect(() => ctx.chatluna.platform.registerTool(toolName, {
-            description: tool.description,
-            selector() {
-                return true
-            },
-            createTool() {
-                return new SocialReaderTool(ctx, cfg, cache)
-            },
-            meta: {
-                source: 'extension',
-                group: 'social-media-reader',
-                tags: ['social-media-reader'],
-                defaultAvailability: {
-                    enabled: true,
-                    main: true,
-                    chatluna: true,
-                    characterScope: 'all'
-                }
-            }
-        }))
-    })
+    }))
 }
 
 async function formatOutput(
@@ -270,30 +84,15 @@ async function formatOutput(
     fromCache: boolean,
     preferStoredLink: boolean,
     includeVerbose: boolean,
-    hasReadFilesTool: boolean,
     ctx: Context,
-    cfg: Config,
-    conversationId?: string
+    cfg: ReadConfig
 ) {
-    const storedImages = data.cached.images.map((item) => item.stored)
-    const commentImageMap = new Map(
-        (data.cached.commentImages || []).map((item) => [item.source, item.stored])
-    )
-    const storedVideos = data.cached.videos.map((item) => item.stored)
-    const storedAudios = data.cached.audios.map((item) => item.stored)
-
-    const images =
-        preferStoredLink && storedImages.length
-            ? storedImages
-            : data.result.images
-    const videos =
-        preferStoredLink && storedVideos.length
-            ? storedVideos
-            : data.result.videos
-    const audios =
-        preferStoredLink && storedAudios.length
-            ? storedAudios
-            : data.result.audios
+    const commentImageMap = new Map(data.cached.commentImages.map(item => [item.source, item.stored]))
+    const links = (sources: string[], cached: CachedMediaItem[]) => sources.map(url =>
+        preferStoredLink ? cached.find(item => item.source === url)?.stored || url : url)
+    const images = links(data.result.images, data.cached.images)
+    const videos = links(data.result.videos, data.cached.videos)
+    const audios = links(data.result.audios, data.cached.audios)
 
     const pickOne = (items: string[]) => (items.length ? items[0] : '')
     const pickFirst = <T>(items: T[]) => (items.length ? items[0] : null)
@@ -448,34 +247,6 @@ async function formatOutput(
         }
     }
 
-    const noteTargets: string[] = []
-    if (cover) {
-        noteTargets.push('`cover`')
-    }
-    if (mergedVideo || (data.result.platform === 'xiaohongshu' && primaryVideo)) {
-        noteTargets.push('`video`')
-    }
-    if (!mergedVideo && primaryVideo) {
-        noteTargets.push('`videoResources.video`')
-    }
-    if (!mergedVideo && primaryAudio) {
-        noteTargets.push('`videoResources.audio`')
-    }
-    if (data.result.platform === 'xiaohongshu' && images.length && !primaryVideo) {
-        noteTargets.push('`resources.images`')
-    }
-
-    const note = hasReadFilesTool ? createMediaNote(noteTargets, data.result.platform, !!(mergedVideo || primaryVideo)) : undefined
-    if (note && conversationId) {
-        ctx.chatluna.contextManager.inject({
-            conversationId,
-            name: 'read_social_media_note',
-            value: new HumanMessage(note),
-            once: true,
-            stage: 'after_scratchpad'
-        })
-    }
-
     if (!includeVerbose) {
         return output
     }
@@ -502,30 +273,11 @@ async function formatOutput(
     }
 }
 
-function createMediaNote(targets: string[], platform: string, hasVideo: boolean) {
-    const uniqueTargets = [...new Set(targets)]
-    const contentType = platform === 'xiaohongshu' && !hasVideo ? 'post' : 'video'
-
-    const readTarget = uniqueTargets.length
-        ? `the media URLs in ${joinWithAnd(uniqueTargets)}`
-        : 'the media URLs'
-
-    return [
-        `**CRITICAL**: The title, description, tags, comments, and other text fields above are only **metadata**; they do NOT represent the actual visual or auditory content of this ${contentType}.`,
-        `You have NOT yet perceived what the ${contentType} actually shows or sounds like.`,
-        `To understand the actual content, you MUST call the \`read_files\` tool to read ${readTarget} (ignore file duration or size concerns).`,
-        `Do NOT assume you already know the ${contentType}'s content from metadata alone; respond to the user only after reading the media.`
-    ].join(' ')
-}
-
-function joinWithAnd(items: string[]) {
-    if (items.length <= 1) {
-        return items[0] || ''
-    }
-    if (items.length === 2) {
-        return `${items[0]} and ${items[1]}`
-    }
-    return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`
+function mediaTypeFromUrl(url: string) {
+    if (!isMediaUrl(url)) return
+    const extension = new URL(url).pathname.match(/\.(jpg|jpeg|png|webp|gif|avif|mp4)$/i)?.[1].toLowerCase()
+    if (extension === 'mp4') return 'video/mp4'
+    if (extension) return 'image/' + (extension === 'jpg' ? 'jpeg' : extension)
 }
 
 function formatDuration(totalSeconds: number) {
@@ -556,173 +308,4 @@ function createTransientResult(
             mergedVideo: ''
         }
     }
-}
-
-export * from './config'
-
-function toCanonicalBilibiliUrl(input: string) {
-    const bv = input.match(/BV[0-9a-zA-Z]{10}/i)?.[0]
-    const av = input.match(/(?:^|[^a-zA-Z0-9])av(\d+)/i)?.[1]
-    let p = 1
-
-    try {
-        const url = new URL(input)
-        const qp = Number(url.searchParams.get('p') || 1)
-        if (Number.isInteger(qp) && qp > 0) {
-            p = qp
-        }
-    } catch {
-        // ignore
-    }
-
-    if (bv) {
-        const id = bv.toUpperCase().startsWith('BV') ? `BV${bv.slice(2)}` : bv
-        return p > 1
-            ? `https://www.bilibili.com/video/${id}?p=${p}`
-            : `https://www.bilibili.com/video/${id}`
-    }
-
-    if (av) {
-        return p > 1
-            ? `https://www.bilibili.com/video/av${av}?p=${p}`
-            : `https://www.bilibili.com/video/av${av}`
-    }
-
-    return input
-}
-
-async function toCanonicalBilibiliRequestUrl(
-    ctx: Context,
-    input: string,
-    timeoutSeconds: number
-) {
-    let url = input
-    try {
-        const host = new URL(input).hostname.toLowerCase()
-        if (
-            host.includes('b23.tv')
-            || host.includes('bili22.cn')
-            || host.includes('bili23.cn')
-            || host.includes('bili33.cn')
-            || host.includes('bili2233.cn')
-        ) {
-            const res = await ctx.http(input, {
-                method: 'GET',
-                timeout: timeoutSeconds * 1000,
-                redirect: 'follow'
-            })
-            url = res.url || input
-        }
-    } catch {
-        url = input
-    }
-    return toCanonicalBilibiliUrl(url)
-}
-
-async function normalizeCardItem(
-    ctx: Context,
-    item: { platform: 'bilibili' | 'xiaohongshu'; title: string; url: string },
-    timeoutSeconds: number
-) {
-    if (item.platform === 'xiaohongshu') {
-        return {
-            ...item,
-            url: toCanonicalXiaohongshuUrl(item.url)
-        }
-    }
-
-    let resolved = item.url
-    try {
-        const host = new URL(item.url).hostname.toLowerCase()
-        if (
-            host.includes('b23.tv')
-            || host.includes('bili22.cn')
-            || host.includes('bili23.cn')
-            || host.includes('bili33.cn')
-            || host.includes('bili2233.cn')
-        ) {
-            const res = await ctx.http(item.url, {
-                method: 'GET',
-                timeout: timeoutSeconds * 1000,
-                redirect: 'follow'
-            })
-            resolved = res.url || item.url
-        }
-    } catch {
-        resolved = item.url
-    }
-
-    return {
-        ...item,
-        url: toCanonicalBilibiliUrl(resolved)
-    }
-}
-
-function toCanonicalXiaohongshuUrl(input: string) {
-    try {
-        const url = new URL(input)
-        const m = url.pathname.match(/\/(?:discovery\/item|explore)\/([0-9a-zA-Z]+)/)
-        if (!m?.[1]) {
-            return input
-        }
-
-        const token = url.searchParams.get('xsec_token') || ''
-        const canonical = new URL(`https://www.xiaohongshu.com/discovery/item/${m[1]}`)
-        if (token) {
-            canonical.searchParams.set('xsec_token', token)
-            canonical.searchParams.set('xsec_source', 'pc_user')
-        }
-        return canonical.toString()
-    } catch {
-        return input
-    }
-}
-
-function injectQuoteContent(quote: unknown, eventQuote: unknown, cards: ReturnType<typeof extractCardItems>) {
-    if (!cards.length) return
-    const injected = cards.map((item) => formatCardText(item)).join('\n')
-
-    if (quote && typeof quote === 'object') {
-        const target = quote as Record<string, unknown>
-        const previous = typeof target['content'] === 'string' ? target['content'].trim() : ''
-        target['content'] = previous ? `${previous}\n${injected}` : injected
-    }
-
-    if (eventQuote && typeof eventQuote === 'object') {
-        const target = eventQuote as Record<string, unknown>
-        const previous = typeof target['content'] === 'string' ? target['content'].trim() : ''
-        target['content'] = previous ? `${previous}\n${injected}` : injected
-    }
-}
-
-function resolveQuote(session: unknown) {
-    if (!session || typeof session !== 'object') return undefined
-    const target = session as Record<string, unknown>
-
-    if (target['quote'] && typeof target['quote'] === 'object') {
-        return target['quote']
-    }
-
-    const event = target['event'] as Record<string, unknown>
-    if (!event || typeof event !== 'object') return undefined
-
-    const message = event['message'] as Record<string, unknown>
-    if (!message || typeof message !== 'object') return undefined
-
-    const quote = message['quote']
-    if (!quote || typeof quote !== 'object') return undefined
-
-    target['quote'] = quote
-    return quote
-}
-
-function getEventQuote(session: unknown) {
-    if (!session || typeof session !== 'object') return undefined
-    const event = (session as Record<string, unknown>)['event']
-    if (!event || typeof event !== 'object') return undefined
-    const message = (event as Record<string, unknown>)['message']
-    if (!message || typeof message !== 'object') return undefined
-    const quote = (message as Record<string, unknown>)['quote']
-    if (!quote || typeof quote !== 'object') return undefined
-    return quote
 }

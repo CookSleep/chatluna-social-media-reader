@@ -1,18 +1,24 @@
 {
-    "compilerOptions": {
-        "rootDir": "src",
-        "outDir": "lib",
-        "target": "es2022",
-        "emitDeclarationOnly": true,
-        "module": "esnext",
-        "declaration": true,
-        "composite": true,
-        "incremental": true,
-        "skipLibCheck": true,
-        "esModuleInterop": true,
-        "moduleResolution": "Bundler"
-    },
-    "include": [
-        "src"
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib",
+    "target": "ES2024",
+    "module": "esnext",
+    "declaration": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
     ]
+  },
+  "include": [
+    "src"
+  ]
 }

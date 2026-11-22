@@ -2,11 +2,17 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { Context, Time } from 'koishi'
-import type {} from 'koishi-plugin-ffmpeg-path'
-import { describeCommentImages } from './comment-image'
-import { Config, name } from './config'
-import { CachedMediaItem, CachedResult, ParseRequest, SocialParseResult } from './types'
+import type { Context } from 'cordis'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import type {} from '@cordisjs/plugin-database'
+import type {} from '@cordisjs/plugin-timer'
+import type {} from '@chatluna/storage-files'
+import { fetchMedia, readLimited } from './utils/url.js'
+
+import { describeCommentImages } from './comment-image.js'
+import type { ReadConfig as Config } from './config.js'
+import { CachedMediaItem, CachedResult, ParseRequest, SocialParseResult } from './types.js'
 
 interface SocialMediaCacheRow {
     key: string
@@ -16,18 +22,7 @@ interface SocialMediaCacheRow {
     cached: string
 }
 
-declare module 'koishi' {
-    interface Context {
-        chatluna_storage?: {
-            createTempFile(
-                buffer: Buffer,
-                filename: string,
-                expireHours?: number,
-                mimeType?: string
-            ): Promise<{ url: string }>
-        }
-    }
-
+declare module '@cordisjs/plugin-database' {
     interface Tables {
         chatluna_social_media_cache: SocialMediaCacheRow
     }
@@ -44,7 +39,7 @@ export class CacheService {
     ) {}
 
     async init() {
-        this.ctx.database.extend(
+        this.ctx.model.extend(
             TABLE,
             {
                 key: { type: 'string', length: 64 },
@@ -59,13 +54,13 @@ export class CacheService {
         if (!this.cfg.cache.enabled) return
 
         await this.cleanupExpired()
-        this.ctx.setInterval(() => this.cleanupExpired(), Time.minute * 10)
+        this.ctx.interval(() => this.cleanupExpired(), 600_000)
     }
 
-    createKey(req: ParseRequest) {
+    createKey(req: ParseRequest): string {
         return crypto
             .createHash('sha1')
-            .update(JSON.stringify(req))
+            .update(JSON.stringify([req, this.cfg.bilibili.maxDescLength, this.cfg.bilibili.describeCommentImages, this.cfg.commentImageService.model, this.cfg.commentImageService.prompt]))
             .digest('hex')
     }
 
@@ -138,17 +133,9 @@ export class CacheService {
                 cached.audios = await this.downloadMany(result.audios, 'audio')
             }
 
-            if (!this.isMediaCacheComplete(result, cached, mergeAudio)) {
-                throw new Error('媒体缓存不完整，已跳过写入缓存。')
-            }
         } else if (this.cfg.cache.cacheMedia && !this.warnedStorageUnavailable) {
             this.warnedStorageUnavailable = true
-            this.ctx
-                .logger(name)
-                .warn('未检测到 chatluna-storage-service，媒体将仅返回原始链接，不做存储缓存。')
-            throw new Error('未检测到 chatluna-storage-service，媒体缓存失败。')
-        } else if (this.cfg.cache.cacheMedia) {
-            throw new Error('未检测到 chatluna-storage-service，媒体缓存失败。')
+            this.ctx.logger.debug('未启用 V2 文件存储，保留原始媒体链接。')
         }
 
         const now = Date.now()
@@ -161,7 +148,10 @@ export class CacheService {
             cached
         }
 
-        await this.ctx.database.upsert(TABLE, [this.encode(record)], ['key'])
+        this.cfg.signal?.throwIfAborted()
+        if (!this.cfg.cache.cacheMedia || !this.hasStorageService() || this.isMediaCacheComplete(result, cached, mergeAudio)) {
+            await this.ctx.database.upsert(TABLE, [this.encode(record)], ['key'])
+        }
         return record
     }
 
@@ -214,19 +204,11 @@ export class CacheService {
                     index += 1
 
                     const url = urls[current]
-                    if (
-                        kind === 'image'
-                        && isXhsWebImage(url)
-                        && !url.includes('!nd_dft_wlteh_jpg_3')
-                    ) {
-                        continue
-                    }
-
                     try {
                         const item = await this.download(url, `${kind}-${current + 1}`)
                         if (item) out[current] = item
                     } catch (err) {
-                        this.ctx.logger(name).warn(String(err))
+                        this.ctx.logger.warn(String(err))
                     }
                 }
             })
@@ -241,17 +223,24 @@ export class CacheService {
         const payload = await this.fetchWithinLimit(url, `cache-${base}`)
         if (!payload) return null
 
-        const ext = guessExt(url, payload.contentType)
+        if (base.startsWith('audio-') && !['audio/mpeg', 'audio/wav'].includes(payload.contentType)) {
+            const mp3 = await this.convertAudio(payload.buffer)
+            if (mp3) {
+                payload.buffer = mp3
+                payload.contentType = 'audio/mpeg'
+            }
+        }
+        const ext = payload.contentType === 'audio/mpeg' ? '.mp3' : guessExt(url, payload.contentType)
         const file = await this.ctx.chatluna_storage.createTempFile(
             payload.buffer,
             `${base}${ext}`,
-            this.ttlHours(),
-            payload.contentType || undefined
+            { expireHours: this.ttlHours(), mimeType: payload.contentType || 'application/octet-stream' }
         )
 
         return {
             source: url,
-            stored: file.url,
+            stored: 'storage://' + file.id,
+            mimeType: payload.contentType.split(';')[0].trim().toLowerCase(),
             size: payload.buffer.length
         }
     }
@@ -267,83 +256,14 @@ export class CacheService {
         try {
             const maxEncoded = this.cfg.cache.maxMediaMB * 1024 * 1024
             const maxRaw = Math.floor((maxEncoded * 3) / 4)
-            const downloadFirst = isXhsWebImage(url)
-
-            let probed = 0
-            if (!downloadFirst) {
-                try {
-                    const head = await fetch(url, {
-                        method: 'HEAD',
-                        signal: ac.signal,
-                        headers: {
-                            referer: 'https://www.bilibili.com/',
-                            'user-agent': this.cfg.xiaohongshu.userAgent
-                        }
-                    })
-                    probed = Number(head.headers.get('content-length') || 0)
-                } catch {
-                    probed = 0
-                }
-
-                if (!Number.isFinite(probed) || probed <= 0) {
-                    try {
-                        const probe = await fetch(url, {
-                            method: 'GET',
-                            signal: ac.signal,
-                            headers: {
-                                referer: 'https://www.bilibili.com/',
-                                'user-agent': this.cfg.xiaohongshu.userAgent,
-                                range: 'bytes=0-0'
-                            }
-                        })
-                        const contentRange = probe.headers.get('content-range') || ''
-                        const total = contentRange.split('/').pop() || ''
-                        probed = Number(total || 0)
-                    } catch {
-                        probed = 0
-                    }
-                }
-            }
-
-            if (probed > maxRaw) {
-                this.debug('媒体下载已跳过（探测大小不合法或超限）', {
-                    url,
-                    probed,
-                    maxRaw
-                })
-                return null
-            }
-
-            const res = await fetch(url, {
-                signal: ac.signal,
-                headers: {
-                    referer: 'https://www.bilibili.com/',
-                    'user-agent': this.cfg.xiaohongshu.userAgent
-                }
+            const res = await fetchMedia(url, {
+                signal: this.cfg.signal ? AbortSignal.any([this.cfg.signal, ac.signal]) : ac.signal,
+                headers: { referer: (isXhsMedia(url) ? 'https://www.xiaohongshu.com/' : 'https://www.bilibili.com/'),
+                    'user-agent': this.cfg.xiaohongshu.userAgent }
             })
+            if (!res.ok) { await res.body?.cancel(); return null }
 
-            if (!res.ok) return null
-
-            const len = Number(res.headers.get('content-length') || 0)
-            if (len > maxRaw) {
-                this.debug('媒体下载已跳过（响应头大小超限）', {
-                    url,
-                    len,
-                    maxRaw
-                })
-                return null
-            }
-
-            const buffer = Buffer.from(await res.arrayBuffer())
-            if (buffer.length > maxRaw) {
-                this.debug('媒体下载已跳过（实际大小超限）', {
-                    url,
-                    size: buffer.length,
-                    maxRaw
-                })
-                return null
-            }
-
+            const buffer = await readLimited(res, maxRaw)
             this.debug('媒体下载成功并准备入库存储', {
                 url,
                 size: buffer.length
@@ -361,7 +281,7 @@ export class CacheService {
                     return ''
                 }
             })()
-            this.ctx.logger(name).warn(
+            this.ctx.logger.warn(
                 `媒体下载失败(${tag})：${err instanceof Error ? err.message : String(err)}`
             )
             this.debug('媒体下载失败详情', {
@@ -398,12 +318,11 @@ export class CacheService {
             const temp = await this.ctx.chatluna_storage.createTempFile(
                 merged,
                 'merged.mp4',
-                this.ttlHours(),
-                'video/mp4'
+                { expireHours: this.ttlHours(), mimeType: 'video/mp4' }
             )
-            return temp.url
+            return 'storage://' + temp.id
         } catch (err) {
-            this.ctx.logger(name).warn(
+            this.ctx.logger.warn(
                 `媒体合并失败：${err instanceof Error ? err.message : String(err)}`
             )
             this.debug('媒体合并失败详情', { videoUrl, audioUrl, err: String(err) })
@@ -449,6 +368,26 @@ export class CacheService {
             && hasAllSources(result.audios, cached.audios)
     }
 
+    private async convertAudio(input: Buffer) {
+        const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'chatluna-smr-audio-'))
+        const source = path.join(tmp, 'source.m4a')
+        const output = path.join(tmp, 'audio.mp3')
+        const maxBytes = Math.floor(this.cfg.cache.maxMediaMB * 1024 * 1024 * 0.75)
+        try {
+            await fs.writeFile(source, input)
+            await promisify(execFile)('ffmpeg', [
+                '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file', '-f', 'mov', '-i', source,
+                '-vn', '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '96k', '-fs', String(maxBytes), output
+            ], { timeout: this.cfg.timeoutSeconds * 1000, signal: this.cfg.signal })
+            const size = (await fs.stat(output)).size
+            if (size > 0 && size < maxBytes) return await fs.readFile(output)
+        } catch {
+            this.cfg.signal?.throwIfAborted()
+        } finally {
+            await fs.rm(tmp, { recursive: true, force: true })
+        }
+    }
+
     private async mergeMp4(video: Buffer, audio: Buffer) {
         const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'chatluna-smr-'))
         const videoFile = path.join(tmp, 'video.mp4')
@@ -459,13 +398,12 @@ export class CacheService {
             await fs.writeFile(videoFile, video)
             await fs.writeFile(audioFile, audio)
 
-            await this.ctx.ffmpeg
-                .builder()
-                .input(videoFile)
-                .input(audioFile)
-                .outputOption('-c:v', 'copy', '-c:a', 'aac', '-shortest')
-                .run('file', outFile)
-
+            await promisify(execFile)('ffmpeg', [
+                '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file', '-f', 'mov', '-i', videoFile,
+                '-protocol_whitelist', 'file', '-f', 'mov', '-i', audioFile, '-map', '0:v:0', '-map', '1:a:0',
+                '-c:v', 'copy', '-c:a', 'aac', '-shortest', outFile
+            ], { timeout: this.cfg.timeoutSeconds * 1000, signal: this.cfg.signal })
+            if ((await fs.stat(outFile)).size * 4 / 3 > this.cfg.cache.maxMediaMB * 1024 * 1024) return null
             return await fs.readFile(outFile)
         } catch {
             this.debug('FFmpeg 合并失败')
@@ -478,10 +416,10 @@ export class CacheService {
     private debug(message: string, payload?: unknown) {
         if (!this.cfg.debug) return
         if (payload == null) {
-            this.ctx.logger(name).debug(message)
+            this.ctx.logger.debug(message)
             return
         }
-        this.ctx.logger(name).debug(message, payload)
+        this.ctx.logger.debug(message, payload)
     }
 }
 
@@ -588,6 +526,6 @@ function guessExt(url: string, ct: string) {
     return '.bin'
 }
 
-function isXhsWebImage(url: string) {
-    return url.includes('xhscdn.com') && url.includes('sns-webpic')
+function isXhsMedia(url: string) {
+    return /(?:^|\.)(?:xhscdn|xiaohongshu)\.com$/i.test(new URL(url).hostname)
 }

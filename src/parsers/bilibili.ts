@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
-import { Config } from '../config'
-import { ParseRequest, SocialParseResult } from '../types'
-import { resolveRedirect } from '../utils/url'
+import type { ReadConfig as Config } from '../config.js'
+import { ParseRequest, SocialParseResult } from '../types.js'
+import { resolveRedirect } from '../utils/url.js'
 
 const BVID_RE = /BV[0-9a-zA-Z]{10}/i
 const AVID_RE = /(?:^|[^a-zA-Z0-9])av(\d+)/i
@@ -15,7 +15,7 @@ export async function parseBilibili(
     const directId = extractVideoId(inputUrl)
     const resolved = directId
         ? inputUrl
-        : await resolveRedirect(inputUrl, cfg.timeoutSeconds * 1000)
+        : await resolveRedirect(inputUrl, cfg.timeoutSeconds * 1000, cfg.signal)
     const videoId = directId || extractVideoId(resolved)
     const page = extractPageNo(resolved) || extractPageNo(inputUrl) || 1
     if (!videoId) {
@@ -50,7 +50,10 @@ export async function parseBilibili(
             debug?.('B 站标签解析失败，已忽略', message)
             return [] as BilibiliTagItem[]
         })
-    const playPromise = fetchPlayInfo(detail.bvid, detail.cid, qn, cfg, debug)
+    const playPromise = fetchPlayInfo(detail.bvid, detail.cid, qn, cfg, debug).catch(() => {
+        cfg.signal?.throwIfAborted()
+        return {}
+    })
 
     const [play, comments, tags] = await Promise.all([playPromise, commentsPromise, tagsPromise])
 
@@ -137,15 +140,15 @@ async function fetchVideoDetail(
         bvid: String(data.bvid || ''),
         aid: String(data.aid || ''),
         cid: String(
-            data.cid
-            || picked?.cid
+            picked?.cid
+            || data.cid
             || ''
         ),
         title: String(data.title || ''),
         description: String(data.desc || ''),
         owner: String((data.owner as Record<string, unknown>)?.name || ''),
         cover: normalizeUrl(String(data.pic || '')),
-        durationSec: Number(data.duration || 0),
+        durationSec: Number(picked?.duration || data.duration || 0),
         stats: {
             view: Number((data.stat as Record<string, unknown>)?.view || 0),
             like: Number((data.stat as Record<string, unknown>)?.like || 0),
@@ -369,7 +372,7 @@ async function requestJson(
 
     try {
         const res = await fetch(url, {
-            signal: ac.signal,
+            signal: cfg.signal ? AbortSignal.any([cfg.signal, ac.signal]) : ac.signal,
             headers: {
                 referer: 'https://www.bilibili.com/',
                 accept: 'application/json,text/plain,*/*'
@@ -663,50 +666,42 @@ async function getWbiMixinKey(cfg: Config, debug?: (msg: string, extra?: unknown
         return WBI_MIXIN_CACHE.value
     }
 
-    if (!WBI_MIXIN_CACHE.pending) {
-        WBI_MIXIN_CACHE.pending = (async () => {
-            let lastError = ''
-            for (let i = 0; i < 3; i++) {
-                try {
-                    const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg, debug, 'wbi-nav')
-                    const data = payload.data as Record<string, unknown> | undefined
-                    const wbi = data?.wbi_img as Record<string, unknown> | undefined
-                    if (!wbi || typeof wbi !== 'object') {
-                        throw new Error(`code=${String(payload.code || '')} message=${String(payload.message || '')}`)
-                    }
-                    const img = String(wbi.img_url || '')
-                    const sub = String(wbi.sub_url || '')
-                    const imgKey = img.split('/').pop()?.split('.')[0] || ''
-                    const subKey = sub.split('/').pop()?.split('.')[0] || ''
-                    const raw = `${imgKey}${subKey}`
-                    const mixin = WBI_MIXIN_INDEX.map((idx) => raw[idx]).join('').slice(0, 32)
-                    if (!mixin || mixin.length < 32) {
-                        throw new Error('empty-mixin')
-                    }
-                    WBI_MIXIN_CACHE.value = mixin
-                    WBI_MIXIN_CACHE.expiresAt = Date.now() + 10 * 60 * 1000
-                    return mixin
-                } catch (err) {
-                    lastError = err instanceof Error ? err.message : String(err)
-                    if (i < 2) {
-                        await sleep(200 * (i + 1))
-                    }
-                }
+    let lastError = ''
+    for (let i = 0; i < 3; i++) {
+        try {
+            const payload = await requestJson('https://api.bilibili.com/x/web-interface/nav', cfg, debug, 'wbi-nav')
+            const data = payload.data as Record<string, unknown> | undefined
+            const wbi = data?.wbi_img as Record<string, unknown> | undefined
+            if (!wbi || typeof wbi !== 'object') {
+                throw new Error(`code=${String(payload.code || '')} message=${String(payload.message || '')}`)
             }
-
-            if (WBI_MIXIN_CACHE.value) {
-                debug?.('WBI 签名参数刷新失败，回退使用最近缓存', lastError)
-                return WBI_MIXIN_CACHE.value
+            const img = String(wbi.img_url || '')
+            const sub = String(wbi.sub_url || '')
+            const imgKey = img.split('/').pop()?.split('.')[0] || ''
+            const subKey = sub.split('/').pop()?.split('.')[0] || ''
+            const raw = `${imgKey}${subKey}`
+            const mixin = WBI_MIXIN_INDEX.map((idx) => raw[idx]).join('').slice(0, 32)
+            if (!mixin || mixin.length < 32) {
+                throw new Error('empty-mixin')
             }
-
-            throw new Error(`获取 WBI 签名参数失败：${lastError || 'unknown-error'}`)
-        })()
-            .finally(() => {
-                WBI_MIXIN_CACHE.pending = null
-            })
+            WBI_MIXIN_CACHE.value = mixin
+            WBI_MIXIN_CACHE.expiresAt = Date.now() + 10 * 60 * 1000
+            return mixin
+        } catch (err) {
+            cfg.signal?.throwIfAborted()
+            lastError = err instanceof Error ? err.message : String(err)
+            if (i < 2) {
+                await sleep(200 * (i + 1))
+            }
+        }
     }
 
-    return WBI_MIXIN_CACHE.pending
+    if (WBI_MIXIN_CACHE.value) {
+        debug?.('WBI 签名参数刷新失败，回退使用最近缓存', lastError)
+        return WBI_MIXIN_CACHE.value
+    }
+
+    throw new Error(`获取 WBI 签名参数失败：${lastError || 'unknown-error'}`)
 }
 
 function sleep(ms: number) {
@@ -716,11 +711,9 @@ function sleep(ms: number) {
 const WBI_MIXIN_CACHE: {
     value: string
     expiresAt: number
-    pending: Promise<string> | null
 } = {
     value: '',
     expiresAt: 0,
-    pending: null
 }
 
 const WBI_MIXIN_INDEX = [

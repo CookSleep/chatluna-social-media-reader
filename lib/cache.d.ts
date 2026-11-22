@@ -1,6 +1,6 @@
-import { Context } from 'koishi';
-import { Config } from './config';
-import { CachedResult, ParseRequest, SocialParseResult } from './types';
+import type { Context } from 'cordis';
+import type { ReadConfig as Config } from './config.js';
+import { CachedResult, ParseRequest, SocialParseResult } from './types.js';
 interface SocialMediaCacheRow {
     key: string;
     createdAt: Date;
@@ -8,14 +8,7 @@ interface SocialMediaCacheRow {
     result: string;
     cached: string;
 }
-declare module 'koishi' {
-    interface Context {
-        chatluna_storage?: {
-            createTempFile(buffer: Buffer, filename: string, expireHours?: number, mimeType?: string): Promise<{
-                url: string;
-            }>;
-        };
-    }
+declare module '@cordisjs/plugin-database' {
     interface Tables {
         chatluna_social_media_cache: SocialMediaCacheRow;
     }
@@ -27,7 +20,7 @@ export declare class CacheService {
     constructor(ctx: Context, cfg: Config);
     init(): Promise<void>;
     createKey(req: ParseRequest): string;
-    get(key: string): Promise<CachedResult>;
+    get(key: string): Promise<CachedResult | null>;
     set(key: string, result: SocialParseResult, mergeAudio: boolean): Promise<CachedResult>;
     private cleanupExpired;
     private encode;
@@ -39,6 +32,7 @@ export declare class CacheService {
     private mergeFromSources;
     private hasStorageService;
     private isMediaCacheComplete;
+    private convertAudio;
     private mergeMp4;
     private debug;
 }

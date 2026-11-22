@@ -1,6 +1,5 @@
-import { Context } from 'koishi';
-import { Config } from '../config';
-export declare function parseXiaohongshu(ctx: Context, inputUrl: string, cfg: Config): Promise<{
+import type { ReadConfig as Config } from '../config.js';
+export declare function parseXiaohongshu(inputUrl: string, cfg: Config): Promise<{
     platform: "xiaohongshu";
     title: string;
     content: string;
@@ -9,5 +8,5 @@ export declare function parseXiaohongshu(ctx: Context, inputUrl: string, cfg: Co
     url: string;
     images: string[];
     videos: string[];
-    audios: any[];
+    audios: never[];
 }>;

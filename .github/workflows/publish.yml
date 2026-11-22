@@ -1,31 +1,74 @@
-name: Publish Package
+name: 构建与发布 V2 插件
 
 on:
+  pull_request:
+    branches: [v2]
   push:
-    tags:
-      - 'v*'
+    branches: [v2]
+    tags: ['v2-*']
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
-  publish:
+  pack:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Show tool versions
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: 校验包名、版本和发布分支
         run: |
-          node --version
-          npm --version
+          test "$(node -p "require('./package.json').name")" = chatluna-plugin-social-media-reader
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$GITHUB_REF_NAME" = "v2-$(node -p "require('./package.json').version")"
+            git merge-base --is-ancestor HEAD origin/v2
+          fi
+      - name: 从源码复现已通过 V2 实例测试的产物
+        run: |
+          stage=$(mktemp -d)
+          cp -r src "$stage/"
+          (cd "$stage" && npm exec --yes --package=typescript@7.0.2 -- tsc --ignoreConfig --noCheck --target ES2024 --module ESNext --declaration --outDir lib src/*.ts)
+          diff -ru lib "$stage/lib"
+          cp package.json README.md LICENSE "$stage/"
+          mkdir release
+          (cd "$stage" && npm pack --pack-destination "$GITHUB_WORKSPACE/release")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: release/*.tgz
+          if-no-files-found: error
 
-      - name: Publish to npm (Trusted Publishing via OIDC)
-        run: npm publish --access public --provenance
+  publish:
+    if: github.ref_type == 'tag'
+    needs: pack
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: release
+      - name: 发布新版本或核验已发布的压缩包
+        run: |
+          package=chatluna-plugin-social-media-reader
+          version=${GITHUB_REF_NAME#v2-}
+          archive="./release/$package-$version.tgz"
+          status=$(curl --silent --show-error --output metadata.json --write-out '%{http_code}' "https://registry.npmjs.org/$package/$version")
+          case "$status" in
+            200)
+              curl --fail --silent --show-error "https://registry.npmjs.org/$package/-/$package-$version.tgz" --output published.tgz
+              cmp "$archive" published.tgz
+              ;;
+            404) npm publish "$archive" --access public --provenance ;;
+            *) echo "npm registry HTTP $status" >&2; exit 1 ;;
+          esac

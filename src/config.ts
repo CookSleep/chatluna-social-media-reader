@@ -1,4 +1,4 @@
-import { Schema } from 'koishi'
+import { modelAddressSchema, Schema } from '@chatluna/schema'
 
 export const DEFAULT_COMMENT_IMAGE_PROMPT = '你是一个AI图像描述引擎。请结合图片本身与附带的评论文字，对输入的评论区图片给出30-120字的内容描述。描述应以图片本身为主，只在评论文字确实有助于理解时再引用评论文字。你不应评判或提及时间（若存在）的真实性，你的任务仅仅是描述其本身。'
 
@@ -42,7 +42,7 @@ export interface Config {
 
 export const Config: Schema<Config> = Schema.intersect([
     Schema.object({
-        timeoutSeconds: Schema.number().default(15).description('网络请求超时（秒）'),
+        timeoutSeconds: Schema.number().min(1).max(120).default(15).description('网络请求超时（秒）'),
         mediaDownloadConcurrency: Schema.number().min(1).max(20).default(6).description('媒体下载并发数'),
         debug: Schema.boolean().default(false).description('输出调试日志')
     }).description('基础设置'),
@@ -61,7 +61,7 @@ export const Config: Schema<Config> = Schema.intersect([
             ttlSeconds: Schema.number().default(24 * 60 * 60).min(60).description('缓存有效期（秒）'),
             cacheMedia: Schema.boolean()
                 .default(true)
-                .description('缓存媒体文件到 `chatluna-storage-service`（需要安装并启用 `koishi-plugin-chatluna-storage-service`）'),
+                .description('缓存媒体文件到 V2 文件存储'),
             maxMediaMB: Schema.number()
                 .min(1)
                 .max(100)
@@ -104,7 +104,7 @@ export const Config: Schema<Config> = Schema.intersect([
             maxDescLength: Schema.number().default(500).min(20).max(1000).description('简介最长字符数'),
             mergeAudio: Schema.boolean()
                 .default(true)
-                .description('缓存媒体时合并视频和音频（需要安装并启用 `koishi-plugin-ffmpeg-path`）'),
+                .description('缓存媒体时合并视频和音频（使用系统 ffmpeg）'),
             describeCommentImages: Schema.boolean()
                 .default(true)
                 .description('为评论区图像生成文本描述')
@@ -112,7 +112,7 @@ export const Config: Schema<Config> = Schema.intersect([
     }),
     Schema.object({
         commentImageService: Schema.object({
-            model: Schema.dynamic('model').default('无').description('用于评论区图像描述的多模态模型'),
+            model: modelAddressSchema({ modality: 'chat', default: '', description: '用于评论区图像描述的多模态模型' }),
             prompt: Schema.string().role('textarea').default(DEFAULT_COMMENT_IMAGE_PROMPT).description('评论区图像描述提示词'),
             taskConcurrency: Schema.number().min(1).max(20).default(20).description('评论区图像描述并发数')
         }).description('评论区图像描述服务')
@@ -121,26 +121,7 @@ export const Config: Schema<Config> = Schema.intersect([
 
 export const name = 'chatluna-social-media-reader'
 
-export const usage = `## chatluna-social-media-reader
-为 ChatLuna 提供哔哩哔哩与小红书链接读取工具，返回标题、作者、正文与媒体资源链接。
+export const usage = '读取聊天中分享的哔哩哔哩视频和小红书笔记，也可由模型主动调用工具。启用音视频混流时，系统需提供 ffmpeg。'
+export const inject = { required: ['chat', 'tools', 'model', 'database', 'timer'], optional: ['chatluna_storage', 'ai'] }
 
-### 能力
-- 哔哩哔哩：支持 \`bilibili.com\`、\`b23.tv\` 等短链，输出标签与简介，可选解析热评与置顶评论，并为评论区图片生成描述。
-- 小红书：支持 \`xiaohongshu.com\`、\`xhslink.com\`，输出标题、作者、正文、图片与视频。
-- 分享卡片：消息中的 B 站、小红书分享卡片会被转成“标题 + 链接”的文字，供模型决定是否读取。
-
-### 依赖
-- 必需：\`koishi-plugin-ffmpeg-path\` 提供的 \`ffmpeg\` 服务，以及 \`database\`、\`http\` 服务。
-- 可选：\`koishi-plugin-chatluna-storage-service\`，用于缓存图片、视频、音频，并在缓存时合并 B 站视频的音视频。
-- 可选：\`koishi-plugin-chatluna-multimodal-service\`，提供 \`read_files\` 工具，让模型读取视频、音频或图片的实际内容。
-- 为评论区图片生成描述时，需要在“评论区图像描述服务”中选择支持图片输入的模型。
-
-### 使用声明
-- 本插件仅供学习、研究与合规开发使用。
-- 使用者应自行遵守各社交媒体平台的用户协议与 robots.txt 规定。
-- 请勿将本插件用于任何违法、违规、侵犯版权或违反平台规则的行为，因不当使用产生的任何后果由使用者自行承担。`
-
-export const inject = {
-    required: ['chatluna', 'http', 'database', 'ffmpeg'],
-    optional: ['chatluna_storage']
-}
+export type ReadConfig = Config & { signal?: AbortSignal }

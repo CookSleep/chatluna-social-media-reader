@@ -1,76 +1,48 @@
-import { HumanMessage } from '@langchain/core/messages'
-import { Context } from 'koishi'
-import { ModelCapabilities } from 'koishi-plugin-chatluna/llm-core/platform/types'
-import { getImageType, getMessageContent } from 'koishi-plugin-chatluna/utils/string'
-import { Config, DEFAULT_COMMENT_IMAGE_PROMPT } from './config'
+import type { Context } from 'cordis'
+import type {} from '@chatluna/ai'
+import type {} from '@chatluna/storage-files'
+import { DEFAULT_COMMENT_IMAGE_PROMPT, type ReadConfig } from './config.js'
+import { fetchMedia, readLimited } from './utils/url.js'
 
 export function toMarkdownImage(text: string, url: string) {
     return `![${text.trim() || 'Image'}](${url})`
 }
 
-export async function describeCommentImages(
-    ctx: Context,
-    cfg: Config,
-    items: Array<{ url: string; text: string }>
-) {
+export async function describeCommentImages(ctx: Context, cfg: ReadConfig, items: Array<{ url: string; text: string }>) {
     const out = new Map<string, string>()
-    if (!cfg.bilibili.describeCommentImages || !items.length) {
-        return out
-    }
-    if (!cfg.commentImageService.model || cfg.commentImageService.model === '无') {
-        return out
-    }
-
-    const ref = await ctx.chatluna.createChatModel(cfg.commentImageService.model)
-    if (!ref.value) {
-        return out
-    }
-    if (!ref.value.modelInfo.capabilities.includes(ModelCapabilities.ImageInput)) {
-        return out
-    }
-
-    const list = [...new Map(items.map((item) => [`${item.url}\n${item.text}`, item])).values()]
-    let idx = 0
-
-    await Promise.all(
-        Array.from({ length: Math.min(cfg.commentImageService.taskConcurrency, list.length) }, async () => {
-            while (idx < list.length) {
-                const item = list[idx]
-                idx += 1
+    const model = cfg.commentImageService.model
+    const ai = ctx.get('ai')
+    if (!ai || !cfg.bilibili.describeCommentImages || !model || model === '无' || !items.length) return out
+    const pending = [...new Map(items.map(item => [item.url, item])).values()]
+    try {
+        const bound = await ai.chat(model).bind({ timeout: { total: cfg.timeoutSeconds * 1000 }, signal: cfg.signal })
+        await Promise.all(Array.from({ length: Math.min(pending.length, cfg.commentImageService.taskConcurrency) }, async () => {
+            for (let item; (item = pending.pop());) {
                 try {
-                    const data = await ctx.http.get<ArrayBuffer>(item.url, {
-                        responseType: 'arraybuffer',
-                        timeout: cfg.timeoutSeconds * 1000,
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-                        }
-                    })
-                    const buf = Buffer.from(data)
-                    const mime = getImageType(buf) || 'image/jpeg'
-                    const msg = await ref.value.invoke([
-                        new HumanMessage({
-                            content: [
-                                {
-                                    type: 'text',
-                                    text: `${cfg.commentImageService.prompt || DEFAULT_COMMENT_IMAGE_PROMPT}\n\n该图片所属评论文字：${item.text || '（无）'}`
-                                },
-                                {
-                                    type: 'image_url',
-                                    image_url: {
-                                        url: `data:${mime};base64,${buf.toString('base64')}`
-                                    }
-                                }
-                            ]
-                        })
-                    ])
-                    const text = getMessageContent(msg.content).trim()
-                    if (text) {
-                        out.set(item.url, text)
+                    cfg.signal?.throwIfAborted()
+                    const limit = AbortSignal.timeout(cfg.timeoutSeconds * 1000)
+                    const file = item.url.startsWith('storage://')
+                        ? await ctx.get('chatluna_storage')?.readFile(item.url.slice(10)) : undefined
+                    let bytes = file?.buffer
+                    let mime = file?.type
+                    if (!bytes) {
+                        const response = await fetchMedia(item.url, { signal: cfg.signal ? AbortSignal.any([cfg.signal, limit]) : limit })
+                        if (!response.ok) { await response.body?.cancel(); continue }
+                        bytes = await readLimited(response, cfg.cache.maxMediaMB * 1024 * 1024 * 0.75)
+                        mime = response.headers.get('content-type')?.split(';')[0]
                     }
-                } catch {}
+                    if (!mime?.startsWith('image/')) continue
+                    const chunks: string[] = []
+                    for await (const part of bound.call({ messages: [{ role: 'user', content: [
+                        { type: 'text', text: (cfg.commentImageService.prompt || DEFAULT_COMMENT_IMAGE_PROMPT) + '\n评论文字：' + item.text },
+                        { type: 'file', mediaType: mime, data: { type: 'data', data: bytes.toString('base64') } }
+                    ] }] })) {
+                        if (part.type === 'block-end' && part.block.type === 'text') chunks.push(part.block.text)
+                    }
+                    if (chunks.length) out.set(item.url, chunks.join('').trim())
+                } catch { cfg.signal?.throwIfAborted() }
             }
-        })
-    )
-
+        }))
+    } catch { cfg.signal?.throwIfAborted() }
     return out
 }

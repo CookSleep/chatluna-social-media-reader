@@ -2,7 +2,7 @@
 
 # ChatLuna Social Media Reader
 
-[![npm](https://img.shields.io/npm/v/koishi-plugin-chatluna-social-media-reader?style=flat-square)](https://www.npmjs.com/package/koishi-plugin-chatluna-social-media-reader)
+[![npm](https://img.shields.io/npm/v/chatluna-plugin-social-media-reader?style=flat-square)](https://www.npmjs.com/package/chatluna-plugin-social-media-reader)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
 **让 ChatLuna 看懂群里分享的 B 站视频和小红书笔记**
@@ -19,7 +19,8 @@
 ### 🔍 读取链接
 - **结构化输出**：返回平台、标题、作者、正文或简介、封面，以及图片、视频、音频的链接。
 - **短链与分 P**：自动展开 B 站短链，保留分 P 页码。
-- **分享卡片**：消息中的 B 站、小红书分享卡片（如 QQ 小程序卡片，包括被引用消息里的卡片）会被转成「标题 + 链接」的文字，模型能看到并决定是否读取。
+- QQ 分享的 B 站、小红书卡片显示为两行：`【标题-平台】` 和卡片自带的链接。生成预览时只读卡片字段。
+- 模型调用 `read_social_media` 时，插件才抓取指定链接并返回正文与媒体。
 
 ### 📺 哔哩哔哩
 - **标签**：输出视频标签，只保留标签名。
@@ -34,26 +35,12 @@
 
 ### 💾 缓存
 - **读取缓存**：解析结果存入数据库，默认保存 1 天。
-- **媒体缓存**：启用 `chatluna-storage-service` 时，把图片、视频、音频下载到存储服务并返回存储后的链接；单个文件默认上限 20 MB。
-- **配合 `read_files`**：当前可用的工具中有 `read_files` 时，提示模型调用它读取视频、音频或图片的实际内容。
+- **媒体缓存**：使用 V2 文件存储保存图片、视频和音频，单个文件默认上限 20 MB。无法缓存时保留可用的来源链接。
+- **模型输入**：工具调用使用 V2 媒体块，具体可读取的类型取决于模型能力。
 
----
+## 安装
 
-## ✅ 前置条件
-
-- Koishi，以及已安装并配置好模型的 [ChatLuna](https://github.com/ChatLunaLab/chatluna)（`koishi-plugin-chatluna` 1.3.36 及以上）。
-- 需要 `database`、`http` 服务，以及 [`koishi-plugin-ffmpeg-path`](https://www.npmjs.com/package/koishi-plugin-ffmpeg-path) 提供的 `ffmpeg` 服务。
-- 可选：[`koishi-plugin-chatluna-storage-service`](https://www.npmjs.com/package/koishi-plugin-chatluna-storage-service)，用于媒体缓存与 B 站音视频合并。
-- 可选：[`koishi-plugin-chatluna-multimodal-service`](https://www.npmjs.com/package/koishi-plugin-chatluna-multimodal-service)，提供 `read_files` 工具，让模型读取视频、音频或图片的实际内容。
-- 为评论区图片生成描述时，需要一个支持图片输入的模型。
-
-## 📦 安装
-
-在 Koishi 控制台的插件市场中搜索 `chatluna-social-media-reader` 安装，或在 Koishi 项目目录中运行：
-
-```bash
-npm install koishi-plugin-chatluna-social-media-reader
-```
+此分支面向 ChatLuna V2，包名为 `chatluna-plugin-social-media-reader`。`main` 分支继续维护 Koishi 版本。启用数据库、定时器及工具服务。媒体缓存使用 `@chatluna/storage-files`，音视频混流使用系统 PATH 中的 `ffmpeg`，评论配图描述使用配置的多模态模型。
 
 ## ⚙️ 配置
 
@@ -78,7 +65,6 @@ npm install koishi-plugin-chatluna-social-media-reader
 
 ## 🙏 致谢
 
-- [ChatLuna](https://github.com/ChatLunaLab/chatluna)：插件所扩展的 Koishi 大模型对话框架。
-- [Koishi](https://koishi.chat/)：机器人框架。
+- [ChatLuna](https://github.com/ChatLunaLab/chatluna)：插件所扩展的对话框架。
 - [pskdje/bilibili-API-collect](https://github.com/pskdje/bilibili-API-collect)：为 B 站视频详情、标签与相关接口的实现提供了文档参考。
 - [DD1969 的「Bilibili - 在未登录的情况下照常加载评论」](https://greasyfork.org/zh-CN/scripts/473498-bilibili-%E5%9C%A8%E6%9C%AA%E7%99%BB%E5%BD%95%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E7%85%A7%E5%B8%B8%E5%8A%A0%E8%BD%BD%E8%AF%84%E8%AE%BA)：为 B 站评论接口的兼容性排查提供了参考。

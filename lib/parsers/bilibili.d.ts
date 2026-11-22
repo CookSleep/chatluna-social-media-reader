@@ -1,5 +1,5 @@
-import { Config } from '../config';
-import { ParseRequest } from '../types';
+import type { ReadConfig as Config } from '../config.js';
+import { ParseRequest } from '../types.js';
 export declare function parseBilibili(inputUrl: string, cfg: Config, req: ParseRequest, debug?: (msg: string, extra?: unknown) => void): Promise<{
     platform: "bilibili";
     title: string;
@@ -28,7 +28,7 @@ export declare function parseBilibili(inputUrl: string, cfg: Config, req: ParseR
             share: number;
             comment: number;
         };
-        pinnedComment: BilibiliHotComment;
+        pinnedComment: BilibiliHotComment | null;
         hotComments: BilibiliHotComment[];
     };
 }>;

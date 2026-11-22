@@ -25,6 +25,7 @@ export interface SocialParseResult {
 export interface CachedMediaItem {
     source: string;
     stored: string;
+    mimeType?: string;
     size: number;
     description?: string;
 }
